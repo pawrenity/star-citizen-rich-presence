@@ -8,12 +8,12 @@
   "source_vehicle_rows": 310,
   "catalogued_vehicles": 310,
   "skipped_ambiguous_aliases": 375,
-  "aliases": 18322,
+  "aliases": 18335,
   "systems": {
     "Stanton": 923,
     "Pyro": 582,
     "Nyx": 448
   },
-  "facts_sha256": "e868862aec015ca26927dd57694145c205951ce1ffbd000feb072fb9a6eee31c",
+  "facts_sha256": "d2991d0dc0d79f10000bd1b1b1ef5656286e0b8810a06fcc324358dbf879c2a7",
   "notes": "Versioned extracted game data plus explicit log aliases. No descriptions or imagery. Data may contain hidden or unreleased records; recognition is not a claim that every entry is currently visitable. Shared unqualified names are omitted."
 }

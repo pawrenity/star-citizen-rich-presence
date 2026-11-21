@@ -1,9 +1,16 @@
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_APP_ID: &str = "983874700440645672";
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardButton {
+    pub label: String,
+    pub url: String,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -52,6 +59,7 @@ pub struct Args {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub buttons: Vec<CardButton>,
     pub log_path: Option<PathBuf>,
     pub channel: String,
     pub discord_app_id: String,
@@ -61,6 +69,11 @@ pub struct Config {
     pub show_profile: bool,
     pub show_contracts: bool,
     pub show_notifications: bool,
+    pub show_location: bool,
+    pub show_ship: bool,
+    pub show_artwork: bool,
+    pub custom_state: String,
+    pub custom_details: String,
     /// Optional additional aliases; embedded aliases remain available.
     pub locations_file: Option<PathBuf>,
     /// Asset keys must exist in YOUR Discord application. Unlisted locations use logo.
@@ -70,6 +83,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            buttons: Vec::new(),
             log_path: None,
             channel: "LIVE".into(),
             discord_app_id: DEFAULT_APP_ID.into(),
@@ -79,6 +93,11 @@ impl Default for Config {
             show_profile: true,
             show_contracts: true,
             show_notifications: true,
+            show_location: true,
+            show_ship: true,
+            show_artwork: true,
+            custom_state: String::new(),
+            custom_details: String::new(),
             locations_file: None,
             image_assets: Default::default(),
         }
@@ -135,6 +154,37 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.buttons.len() <= 2,
+            "Discord supports up to two buttons"
+        );
+        for (index, button) in self.buttons.iter().enumerate() {
+            let number = index + 1;
+            ensure!(
+                !button.label.trim().is_empty()
+                    && button.label.len() <= 32
+                    && !button.label.chars().any(char::is_control),
+                "Button {number} needs a label of 1–32 bytes"
+            );
+            let host = button
+                .url
+                .strip_prefix("https://")
+                .and_then(|rest| rest.split(['/', '?', '#']).next());
+            ensure!(
+                button.url.len() <= 512
+                    && !button.url.contains(['\\', '@'])
+                    && !button
+                        .url
+                        .chars()
+                        .any(|c| c.is_whitespace() || c.is_control())
+                    && host.is_some_and(|host| !host.is_empty()
+                        && host.contains('.')
+                        && host
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'))),
+                "Button {number} needs a public HTTPS URL of up to 512 bytes"
+            );
+        }
         ensure!(
             matches!(
                 self.channel.as_str(),

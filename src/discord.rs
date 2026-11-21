@@ -124,8 +124,17 @@ fn activity_payload(s: &Snapshot) -> Value {
         assets["small_text"] = json!("Star Citizen");
     }
     let mut payload = json!({"type":0,"details":s.details,"state":s.state,"assets":assets,"timestamps":{"start":s.started}});
-    if let Some(url) = &s.profile_url {
-        payload["buttons"] = json!([{"label":"RSI Profile","url":url}]);
+    let mut buttons = s.buttons.clone();
+    if buttons.len() < 2
+        && let Some(url) = &s.profile_url
+    {
+        buttons.push(crate::config::CardButton {
+            label: "RSI Profile".into(),
+            url: url.clone(),
+        });
+    }
+    if !buttons.is_empty() {
+        payload["buttons"] = json!(buttons);
     }
     payload
 }
@@ -330,6 +339,7 @@ mod tests {
             large_image: "logo".into(),
             large_text: "Star Citizen".into(),
             profile_url: None,
+            buttons: Vec::new(),
             started: 123,
         };
         client.publish(&snapshot).unwrap();
@@ -390,11 +400,29 @@ mod tests {
             large_image: "logo".into(),
             large_text: "Star Citizen".into(),
             profile_url: None,
+            buttons: Vec::new(),
             started: 123,
         };
         let activity = activity_payload(&snapshot);
         assert_eq!(activity["timestamps"]["start"], 123);
         assert!(activity.get("buttons").is_none());
+        let mut linked = snapshot;
+        linked.profile_url = Some("https://robertsspaceindustries.com/citizens/TestPilot".into());
+        linked.buttons.push(crate::config::CardButton {
+            label: "Twitch".into(),
+            url: "https://www.twitch.tv/example".into(),
+        });
+        assert_eq!(
+            activity_payload(&linked)["buttons"][1]["label"],
+            "RSI Profile"
+        );
+        linked.buttons.push(crate::config::CardButton {
+            label: "Our org".into(),
+            url: "https://robertsspaceindustries.com/orgs/EXAMPLE".into(),
+        });
+        let activity = activity_payload(&linked);
+        assert_eq!(activity["buttons"].as_array().unwrap().len(), 2);
+        assert_eq!(activity["buttons"][1]["label"], "Our org");
         let mut bytes = Vec::new();
         write_frame(&mut bytes, 1, &json!({"args":{"activity":null}})).unwrap();
         assert_eq!(

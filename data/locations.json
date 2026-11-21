@@ -691,7 +691,8 @@
       "nyx_nyxpyrojumppoint",
       "nyxpyrojumppoint",
       "pyrogateway_Nyx - Pyro Jump Point",
-      "pyrogateway_nyxpyrojumppoint"
+      "pyrogateway_nyxpyrojumppoint",
+      "rs_ext_nyx-pyro_jp1"
     ],
     "scopes": [
       "Nyx",
@@ -1025,6 +1026,7 @@
     "aliases": [
       "Nyx_nyx_Pyro Gateway",
       "Nyx_nyx_pyrogateway",
+      "RR_JP_NyxPyro",
       "a66119fa-6d93-4e56-bcd1-c9bd2c50beb7",
       "nyx_Pyro Gateway",
       "nyx_pyrogateway",
@@ -7326,6 +7328,7 @@
       "Checkmate",
       "Checkmate_Station",
       "Pyro_pyro_checkmate",
+      "RR_P2_L4",
       "pyro_checkmate"
     ],
     "scopes": [
@@ -9912,6 +9915,7 @@
       "2cc61d92-b7bc-4533-9b97-6a32482a28f1",
       "Pyro_pyro_Nyx Gateway",
       "Pyro_pyro_nyxgateway",
+      "RR_JP_PyroNyx",
       "pyro_Nyx Gateway",
       "pyro_nyxgateway"
     ],
@@ -9988,8 +9992,10 @@
       "Orbituary_Station",
       "Pyro3_orbituary",
       "Pyro_bloom_orbituary",
+      "RR_P3_LEO",
       "bloom_orbituary",
-      "pyro_orbituary"
+      "pyro_orbituary",
+      "rs_ext_pyro3_leo"
     ],
     "scopes": [
       "Bloom",
@@ -13365,7 +13371,8 @@
       "pyr2-l4",
       "pyr2l4",
       "pyro_PYR2 L4",
-      "pyro_pyr2l4"
+      "pyro_pyr2l4",
+      "rs_ext_pyro2_l4"
     ],
     "scopes": [
       "Pyro",
@@ -17856,6 +17863,7 @@
       "pyro_Pyro-Stanton Jump Point",
       "pyro_pyrostantonjumppoint",
       "pyrostantonjumppoint",
+      "rs_ext_pyro-stan_jp1",
       "stantongateway_Pyro-Stanton Jump Point",
       "stantongateway_pyrostantonjumppoint"
     ],
@@ -20842,10 +20850,12 @@
       "Pyro6_ruinstation",
       "Pyro_terminus_Ruin Station",
       "Pyro_terminus_ruinstation",
+      "RR_P6_LEO",
       "RuinStation",
       "Ruin_Station",
       "pyro_Ruin Station",
       "pyro_ruinstation",
+      "rs_ext_pyro6_leo",
       "terminus_Ruin Station",
       "terminus_ruinstation"
     ],
@@ -21098,6 +21108,7 @@
     "aliases": [
       "Pyro_pyro_Stanton Gateway",
       "Pyro_pyro_stantongateway",
+      "RR_JP_PyroStanton",
       "a1b8a311-6465-45dc-873d-e8d06d4372df",
       "pyro_Stanton Gateway",
       "pyro_stantongateway",
@@ -28992,6 +29003,7 @@
     "system": "Stanton",
     "aliases": [
       "Lorville",
+      "ObjectContainer_Lorville_City",
       "Stanton1_Lorville",
       "Stanton_hurston_lorville",
       "f1759f46-e3c0-4dc1-94bc-c94488b58913",
@@ -41269,6 +41281,7 @@
     "system": "Stanton",
     "aliases": [
       "59b22155-405f-4785-9f73-d2028b46f5c3",
+      "RR_JP_StantonPyro",
       "Stanton_stanton_Pyro Gateway",
       "Stanton_stanton_pyrogateway",
       "stanton_Pyro Gateway",

@@ -20,6 +20,16 @@ show_notifications = true # short-lived blueprint, refinery, and hangar notices
 # Image keys must already exist in the selected Discord application's Rich Presence assets.
 # The default is the original application's "logo". New locations have text support
 # without depending on unavailable Pyro/Nyx artwork in that application.
+# Optional public Discord links. With one custom button, the RSI profile can
+# use the second slot. With two custom buttons, both slots go to your links.
+# [[buttons]]
+# label = "Twitch"
+# url = "https://www.twitch.tv/example"
+#
+# [[buttons]]
+# label = "Our org"
+# url = "https://robertsspaceindustries.com/orgs/EXAMPLE"
+
 [image_assets]
 # "Area18" = "area18"
 # "Hurston" = "hurston"

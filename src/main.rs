@@ -1,3 +1,8 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(windows)]
+mod desktop;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use star_citizen_rich_presence::{
@@ -28,6 +33,27 @@ fn now() -> i64 {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    {
+        let extra: Vec<_> = std::env::args_os().skip(1).collect();
+        if extra.is_empty() || extra == ["--tray"] {
+            let result = desktop::run(extra.len() == 1);
+            if let Err(error) = &result {
+                desktop::show_error(&format!("{error:#}"));
+            }
+            return result;
+        }
+        use windows_sys::Win32::System::Console::*;
+        unsafe {
+            if GetStdHandle(STD_OUTPUT_HANDLE).is_null() {
+                AttachConsole(u32::MAX);
+            }
+        }
+    }
+    command_line()
+}
+
+fn command_line() -> Result<()> {
     let args = Args::parse();
     let config = Config::load(&args)?;
     if args.check_discord {
@@ -41,6 +67,7 @@ fn main() -> Result<()> {
                     large_image: "logo".into(),
                     large_text: "Connection test".into(),
                     profile_url: None,
+                    buttons: Vec::new(),
                     started: now(),
                 })
                 .context("Discord rejected the test presence")?;
@@ -118,6 +145,17 @@ fn main() -> Result<()> {
         signal.store(false, Ordering::SeqCst);
     })
     .context("Cannot install shutdown handler")?;
+    monitor(args, config, locations, running, |_, _| true)
+}
+
+fn monitor(
+    args: Args,
+    config: Config,
+    locations: Locations,
+    running: Arc<AtomicBool>,
+    mut desktop: impl FnMut(&mut Config, Option<&str>) -> bool,
+) -> Result<()> {
+    let mut system = System::new();
     println!(
         "Star Citizen Rich Presence {} · {}",
         env!("CARGO_PKG_VERSION"),
@@ -139,6 +177,7 @@ fn main() -> Result<()> {
     let mut last_warning: Option<String> = None;
     let mut waiting_logged = false;
     let mut next_discovery = Instant::now();
+    let mut was_enabled = true;
     while running.load(Ordering::SeqCst) {
         let game: Option<GameProcess> = discovery::running_game(&mut system, &config.channel);
         let key = game.as_ref().map(|g| (g.pid, g.started));
@@ -205,13 +244,19 @@ fn main() -> Result<()> {
             println!("Waiting for Star Citizen...");
             waiting_logged = true;
         }
+        let mut effective = config.clone();
+        let enabled = desktop(&mut effective, None);
         let desired = session
             .as_ref()
-            .and_then(|s| presence::snapshot(s, &config, now()));
+            .and_then(|s| presence::snapshot(s, &effective, now()));
         if args.dry_run {
             if desired != last_preview {
                 println!("{}", serde_json::to_string_pretty(&desired)?);
-                last_preview = desired;
+                last_preview = desired.clone();
+            }
+        } else if !enabled {
+            if was_enabled {
+                let _ = publisher.sync(None, Instant::now());
             }
         } else {
             match publisher.sync(desired.as_ref(), Instant::now()) {
@@ -226,9 +271,24 @@ fn main() -> Result<()> {
                 ),
             }
         }
-        // Short waits make Ctrl+C responsive even with a long polling interval.
+        was_enabled = enabled;
+        desktop(
+            &mut effective,
+            Some(if !enabled {
+                "Discord sharing paused"
+            } else if let Some(warning) = &last_warning {
+                warning
+            } else {
+                desired
+                    .as_ref()
+                    .map_or("Waiting for Star Citizen", |s| &s.details)
+            }),
+        );
         let deadline = Instant::now() + Duration::from_secs(config.poll_seconds);
         while running.load(Ordering::SeqCst) && Instant::now() < deadline {
+            if desktop(&mut effective, None) != enabled {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
     }

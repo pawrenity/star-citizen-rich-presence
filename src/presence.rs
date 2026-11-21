@@ -13,6 +13,7 @@ pub struct Snapshot {
     pub large_image: String,
     pub large_text: String,
     pub profile_url: Option<String>,
+    pub buttons: Vec<crate::config::CardButton>,
     pub started: i64,
 }
 
@@ -30,21 +31,26 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         large_image: "logo".into(),
         large_text: "Star Citizen".into(),
         profile_url: None,
+        buttons: config.buttons.clone(),
         started: session.started,
     };
     if session.phase == Phase::Playing {
-        if let Some((location, at)) = &session.location
-            && (0..=config.location_ttl_seconds as i64).contains(&(now - at))
+        let fresh = |(_, seen): &&(crate::locations::Location, i64)| {
+            (0..=config.location_ttl_seconds as i64).contains(&(now - seen))
+        };
+        if config.show_location
+            && let Some((location, _)) = session
+                .location
+                .as_ref()
+                .filter(fresh)
+                .or_else(|| session.route_origin.as_ref().filter(fresh))
         {
-            snapshot.details = format!("Last seen: {}", location.name);
+            snapshot.details = location.name.clone();
             state = format!("{} · {}", location.system, config.channel);
             snapshot.large_text = location.name.clone();
-            if let Some(asset) = config.image_assets.get(&location.name) {
-                snapshot.large_image = asset.clone();
+            if config.show_artwork {
+                snapshot.large_image = location_art(location, config).into();
             }
-        }
-        if let Some(ship) = &session.ship {
-            state = ship.clone();
         }
         if config.show_contracts {
             if session.contracts.len() == 1 {
@@ -57,9 +63,23 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
             && let Some((details, secondary, at)) = &session.notice
             && (0..=60).contains(&(now - at))
         {
-            snapshot.details = details.clone();
-            if !secondary.is_empty() {
-                state = secondary.clone();
+            if details == "Hangar ready" {
+                if session
+                    .last_atc
+                    .is_some_and(|contact| contact.abs_diff(*at) <= 60)
+                    && session.location.as_ref().is_some_and(|(_, seen)| {
+                        (0..=config.location_ttl_seconds as i64).contains(&(now - seen))
+                    })
+                {
+                    state = "In hangar".into();
+                } else {
+                    state.clone_from(details);
+                }
+            } else {
+                snapshot.details.clone_from(details);
+                if !secondary.is_empty() {
+                    state.clone_from(secondary);
+                }
             }
         }
         if session
@@ -68,6 +88,21 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         {
             snapshot.details = "Incapacitated".into();
         }
+    }
+    if session.phase == Phase::Playing
+        && config.show_ship
+        && let Some(ship) = &session.ship
+    {
+        let context = config.channel == state
+            || [session.location.as_ref(), session.route_origin.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|(location, _)| state == format!("{} · {}", location.system, config.channel));
+        state = if context {
+            ship.clone()
+        } else {
+            format!("{ship} · {state}")
+        };
     }
     if config.show_profile
         && let Some(handle) = &session.handle
@@ -81,10 +116,64 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
             "https://robertsspaceindustries.com/citizens/{handle}"
         ));
     }
-    snapshot.details = limit(&snapshot.details, 128);
-    snapshot.state = limit(&state, 128);
+    snapshot.details =
+        if session.phase == Phase::Playing && !config.custom_details.trim().is_empty() {
+            limit(config.custom_details.trim(), 128)
+        } else {
+            limit(&snapshot.details, 128)
+        };
+    snapshot.state = if session.phase == Phase::Playing && !config.custom_state.trim().is_empty() {
+        limit(config.custom_state.trim(), 128)
+    } else {
+        limit(&state, 128)
+    };
     snapshot.large_text = limit(&snapshot.large_text, 128);
     Some(snapshot)
+}
+
+fn location_art<'a>(location: &crate::locations::Location, config: &'a Config) -> &'a str {
+    if let Some(asset) = config.image_assets.get(&location.name) {
+        return asset;
+    }
+    static ARTWORK: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+        std::sync::OnceLock::new();
+    let artwork = ARTWORK.get_or_init(|| {
+        serde_json::from_str(include_str!("../data/location-artwork.json"))
+            .expect("bundled location artwork must be valid JSON")
+    });
+    if let Some(url) = artwork.get(&format!("{}:{}", location.system, location.name)) {
+        return url;
+    }
+    if config.discord_app_id == crate::config::DEFAULT_APP_ID && location.system == "Stanton" {
+        // Exact matches first. For a POI, prefer its moon over the parent planet.
+        const ART: &[(&str, &str)] = &[
+            ("Grim HEX", "grimhex"),
+            ("Port Olisar", "portolisar"),
+            ("Area18", "area18"),
+            ("Daymar", "daymar"),
+            ("Yela", "yela"),
+            ("Cellin", "cellin"),
+            ("Crusader", "crusader"),
+            ("Hurston", "hurston"),
+            ("microTech", "microtech"),
+            ("ArcCorp", "arccorp"),
+        ];
+        for (name, asset) in ART {
+            if location.name.eq_ignore_ascii_case(name) {
+                return asset;
+            }
+        }
+        for (name, asset) in ART {
+            if location
+                .scopes
+                .iter()
+                .any(|scope| scope.eq_ignore_ascii_case(name))
+            {
+                return asset;
+            }
+        }
+    }
+    "logo"
 }
 
 fn limit(text: &str, max: usize) -> String {
@@ -211,16 +300,13 @@ mod tests {
         assert_eq!(s.location.as_ref().unwrap().0.name, "Lorville");
         assert_eq!(
             snapshot(&s, &Config::default(), 65).unwrap().details,
-            "Last seen: Lorville"
+            "Lorville"
         );
         let hidden = Config {
             show_notifications: false,
             ..Config::default()
         };
-        assert_eq!(
-            snapshot(&s, &hidden, 5).unwrap().details,
-            "Last seen: Lorville"
-        );
+        assert_eq!(snapshot(&s, &hidden, 5).unwrap().details, "Lorville");
     }
     use anyhow::anyhow;
     #[derive(Default)]
@@ -284,7 +370,7 @@ mod tests {
         );
         assert_eq!(
             snapshot(&s, &Config::default(), 4).unwrap().details,
-            "Last seen: Area18"
+            "Area18"
         );
         let config = Config {
             show_profile: false,

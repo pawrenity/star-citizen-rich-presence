@@ -6,6 +6,40 @@ use star_citizen_rich_presence::{
 };
 
 #[test]
+fn live_loading_screen_and_ruin_station_use_client_events() {
+    let locations = Locations::load(None).unwrap();
+    let mut session = Session::new(0);
+    for (line, expected) in [
+        ("User Login Success - Handle[TestPilot]", Phase::Starting),
+        (
+            "<2026-11-21T21:01:31.450Z> [CGlobalGameUI::OpenLoadingScreen] Started",
+            Phase::Loading,
+        ),
+        (
+            "<[GameRules] GameRulesActionEvent_GameModeCreated>",
+            Phase::Loading,
+        ),
+        (
+            "[CSessionManager::OnClientSpawned] Spawned!",
+            Phase::Loading,
+        ),
+        (
+            "Loading screen for Pyro : SC_Frontend closed after 36.67 seconds",
+            Phase::Playing,
+        ),
+        (
+            "<RequestLocationInventory> Player[TestPilot] requested inventory for Location[RR_P6_LEO]",
+            Phase::Playing,
+        ),
+    ] {
+        session.apply(parser::parse(line).unwrap(), 1, &locations);
+        assert_eq!(session.phase, expected, "{line}");
+    }
+    assert_eq!(session.location.as_ref().unwrap().0.name, "Ruin Station");
+    assert_eq!(session.location.as_ref().unwrap().0.system, "Pyro");
+}
+
+#[test]
 fn complete_410_session_tracks_local_events_without_overlay() {
     let locations = Locations::load(None).unwrap();
     let mut session = Session::new(1791993600);
@@ -20,7 +54,7 @@ fn complete_410_session_tracks_local_events_without_overlay() {
     assert!(session.contracts.is_empty());
     assert!(session.ship.is_none());
     let result = presence::snapshot(&session, &Config::default(), at).unwrap();
-    assert_eq!(result.details, "Last seen: Everus Harbor");
+    assert_eq!(result.details, "Everus Harbor");
     assert_eq!(result.state, "Stanton · LIVE");
     assert_eq!(
         result.profile_url.as_deref(),
@@ -48,6 +82,6 @@ fn executable_replay_prints_json_and_respects_privacy() {
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["phase"], "Playing");
-    assert_eq!(result["presence"]["details"], "Last seen: Everus Harbor");
+    assert_eq!(result["presence"]["details"], "Everus Harbor");
     assert!(result["presence"]["profile_url"].is_null());
 }

@@ -19,16 +19,33 @@ The parser was checked against local **4.10.197.2878** logs. An interactive
 location reporting, the displayed Discord profile card, and cleanup on game exit.
 Location, ship, contract, and quantum event shapes were also found in recent
 4.10 backups. This is not a
-continuous position API: the game does not log every movement. Presence says
-**Last seen**, expires locations after 15 minutes by default, and uses a general
-status for unknown locations. Selecting a quantum target alone never changes the
+continuous position API: the game does not log every movement. Presence displays the latest known location name, expires it after 15 minutes by default, and uses a general status for unknown locations. Selecting a quantum target alone never changes the
 reported location. Mission-beacon IDs are not treated as named destinations.
+When there is no fresh location, the app can use a named route origin if the
+game logs it within two seconds of a local quantum selection with the same
+ship and destination. The origin is cleared when that ship arrives.
 
 ## Run
 
 Download/extract the portable Windows build, open Discord desktop, then launch
-`star-citizen-rich-presence.exe`. The app waits for the game and clears presence
-when it exits. Stop it with Ctrl+C. No administrator rights are normally needed.
+`star-citizen-rich-presence.exe` to open the Windows control panel. The app waits
+for the game and clears presence when the game exits. No administrator rights are
+normally needed.
+
+- **Share activity on Discord** pauses or resumes publishing without closing the app.
+- **Launch at Windows sign-in** starts the app in the tray for your Windows account.
+  Keep the executable in a fixed folder, or toggle startup off and back on after moving it.
+- Minimize or close the window to hide it in the tray. Click the tray icon to reopen,
+  or right-click it to pause, resume, or quit.
+- Use **Line 2** and **Line 3** to override the two lines below the Discord title during gameplay. Clear a field and click Apply to restore automatic text.
+
+Desktop preferences are stored in
+`%LOCALAPPDATA%\StarCitizenRichPresence\preferences.toml`. The desktop honors
+`scrp.toml` for game discovery, application ID, and asset keys, and uses it as
+the initial default for card preferences. For a custom installation, set
+`log_path` in `scrp.toml` beside the executable.
+
+Under **Discord buttons**, enter up to two labels and HTTPS URLs, then click Apply. The RSI profile uses a free slot when enabled.
 
 Automatic discovery first tries the running game's executable, then standard
 installation and AppData folders on mounted drives. Windows may hide the game's
@@ -37,6 +54,9 @@ executable path; use an explicit folder for a custom installation:
 ```powershell
 .\star-citizen-rich-presence.exe --game-dir 'D:\Games\StarCitizen\LIVE'
 ```
+
+Command-line diagnostics are still available when you pass flags. Run them from
+PowerShell with `Start-Process -Wait -NoNewWindow` if you want the shell to wait.
 
 More options:
 
@@ -128,9 +148,10 @@ file's folder. LIVE, PTU, EPTU, and TECH-PREVIEW are supported.
 
 The original Discord application ID remains the default. You can select your own
 with `--app-id`. The displayed game name and images belong to that Discord
-application. The default uses its existing `logo` asset; location art is opt-in in
-`[image_assets]`, because new Pyro/Nyx assets cannot be uploaded to someone else's
-application. Keys must exist in the chosen application's Rich Presence assets.
+application. Supported Stanton locations use existing planet, moon, or station
+artwork by default. The app also bundles direct image links for 37 exact locations from the Star Citizen Wiki, including both Nyx–Pyro gateway stations. Other locations without artwork use the default logo. Discord loads
+these images when displaying the card. Use `[image_assets]` to override a location
+with an asset key from your Discord application or a public HTTPS image URL.
 
 Aliases are embedded in the executable. To add or fix an identifier without
 rebuilding, set `locations_file` to a JSON file like:

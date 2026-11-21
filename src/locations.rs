@@ -83,6 +83,33 @@ impl Locations {
         })
     }
 
+    pub fn find_exact(&self, raw: &str) -> Option<Location> {
+        let normalized = normalize(raw);
+        let id = normalized.strip_prefix("loc_").unwrap_or(&normalized);
+        self.aliases
+            .get(id)
+            .map(|&index| self.entries[index].clone())
+    }
+
+    /// The game omits the system suffix from some duplicate names, such as
+    /// "Pyro Gateway". Resolve those only with an independently known system.
+    pub fn find_route_origin(&self, raw: &str, system: Option<&str>) -> Option<Location> {
+        if let Some(location) = self.find_exact(raw) {
+            return Some(location);
+        }
+        let system = system?;
+        let name = normalize(raw);
+        let mut matches = self.entries.iter().filter(|location| {
+            location.system == system
+                && location
+                    .name
+                    .strip_suffix(&format!(" ({system})"))
+                    .is_some_and(|base| normalize(base) == name)
+        });
+        let found = matches.next()?;
+        matches.next().is_none().then(|| found.clone())
+    }
+
     /// Exact aliases first; then most-specific hierarchical prefix with a token boundary.
     pub fn find(&self, raw: &str) -> Option<Location> {
         let normalized = normalize(raw);

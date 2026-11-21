@@ -7,6 +7,10 @@ pub enum Event {
     Login(String),
     Mode(String),
     Loading,
+    LoadingScreenOpened,
+    LoadingScreenClosed {
+        menu: bool,
+    },
     Ready,
     Disconnect,
     Shutdown,
@@ -14,9 +18,26 @@ pub enum Event {
         player: String,
         location: String,
     },
+    InventoryTransition {
+        player: String,
+        location_id: u64,
+    },
+    InventoryTerminal {
+        player: String,
+        location_id: u64,
+    },
+    AtcContact {
+        player: String,
+        location: Option<String>,
+    },
     QuantumTarget {
         vehicle: String,
         destination: String,
+    },
+    RouteOrigin {
+        vehicle: String,
+        destination: String,
+        origin: String,
     },
     QuantumArrival {
         vehicle: String,
@@ -37,7 +58,12 @@ struct Patterns {
     login: Regex,
     mode: Regex,
     inventory: Regex,
+    inventory_transition: Regex,
+    show_inventory: Regex,
+    inventory_terminal: Regex,
+    atc: Regex,
     target: Regex,
+    route_origin: Regex,
     vehicle: Regex,
     notification: Regex,
 }
@@ -49,7 +75,12 @@ fn patterns() -> &'static Patterns {
         mode: Regex::new(r"GameMode\[([^\]]+)\]").unwrap(),
         inventory: Regex::new(r"Player\[([^\]]+)\] requested inventory for Location\[([^\]]+)\]")
             .unwrap(),
+        inventory_transition: Regex::new(r"Player \[([^\]]+)\] is changing location\. Landing \[\d+\] -> \[\d+\]\. Location \[\d+\] -> \[(\d+)\]\. Pending \[0\]").unwrap(),
+        show_inventory: Regex::new(r"Player \[([^\]]+)\] location inventory not cached\. Request Inventory location \[([^\]]+)\]").unwrap(),
+        inventory_terminal: Regex::new(r"Querying location inventory for Player \[([^\]]+)\] at location \[(\d+)\]").unwrap(),
+        atc: Regex::new(r"for ([A-Za-z0-9_-]+) \[\d+\] to track their communication partner AImodule_ATC_(?:([A-Za-z0-9_]+?)ATC\d+_)?\d+ \[\d+\]").unwrap(),
         target: Regex::new(r"Player has selected point (\S+) as their destination").unwrap(),
+        route_origin: Regex::new(r"\|CSCItemNavigation::CalculateRoute\|Projected Start Location is (.{1,128}?) for route to destination (\S+)").unwrap(),
         vehicle: Regex::new(r"([A-Za-z0-9_]+\[\d+\])\|CSCItemNavigation::").unwrap(),
         // Some HUD notifications continue on the next line. Their first line is enough here.
         notification: Regex::new(r#"Added notification "([^"\r\n]*)"#).unwrap(),
@@ -66,6 +97,22 @@ pub fn timestamp(line: &str) -> Option<i64> {
 /// Only explicit client events are interpreted. Bare mentions of planets/ships are ignored.
 pub fn parse(line: &str) -> Option<Event> {
     let p = patterns();
+    let message = line
+        .split_once("> ")
+        .filter(|(prefix, _)| prefix.starts_with('<') && prefix.ends_with('Z'))
+        .map_or(line, |(_, message)| message);
+    if message == "[CGlobalGameUI::OpenLoadingScreen] Started" {
+        return Some(Event::LoadingScreenOpened);
+    }
+    if let Some((scene, _)) = message
+        .strip_prefix("Loading screen for ")
+        .and_then(|message| message.split_once(" closed after "))
+    {
+        let (map, _) = scene.split_once(" : ")?;
+        return Some(Event::LoadingScreenClosed {
+            menu: map == "Frontend_Main",
+        });
+    }
     if let Some(m) = p.login.captures(line) {
         let handle = m[1].trim();
         if !handle.is_empty() {
@@ -100,12 +147,47 @@ pub fn parse(line: &str) -> Option<Event> {
             location: m[2].into(),
         });
     }
+    if line.contains("<Update Inventory Location>") {
+        let m = p.inventory_transition.captures(line)?;
+        return Some(Event::InventoryTransition {
+            player: m[1].into(),
+            location_id: m[2].parse().ok()?,
+        });
+    }
+    if line.contains("<Show Location Inventory>") {
+        return p.show_inventory.captures(line).map(|m| Event::Inventory {
+            player: m[1].into(),
+            location: m[2].into(),
+        });
+    }
+    if line.contains("<OnRequestFetchVehicles>") {
+        let m = p.inventory_terminal.captures(line)?;
+        return Some(Event::InventoryTerminal {
+            player: m[1].into(),
+            location_id: m[2].parse().ok()?,
+        });
+    }
+    if line.contains("<Connection Flow> CSCCommsComponent::DoEstablishCommunicationCommon: Update bubble created") {
+        return p.atc.captures(line).map(|m| Event::AtcContact {
+            player: m[1].into(),
+            location: m.get(2).map(|name| name.as_str().to_owned()),
+        });
+    }
     if line.contains("<Player Selected Quantum Target - Local>") {
         let vehicle = p.vehicle.captures(line)?;
         let target = p.target.captures(line)?;
         return Some(Event::QuantumTarget {
             vehicle: vehicle[1].into(),
             destination: target[1].into(),
+        });
+    }
+    if line.contains("<Calculate Route>") {
+        let vehicle = p.vehicle.captures(line)?;
+        let route = p.route_origin.captures(line)?;
+        return Some(Event::RouteOrigin {
+            vehicle: vehicle[1].into(),
+            origin: route[1].into(),
+            destination: route[2].into(),
         });
     }
     if line.contains("<Quantum Drive Arrived - Arrived at Final Destination>") {

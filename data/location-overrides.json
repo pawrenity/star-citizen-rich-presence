@@ -1,5 +1,5 @@
 [
-  {"name":"Lorville","system":"Stanton","aliases":["Stanton1_Lorville","Lorville"]},
+  {"name":"Lorville","system":"Stanton","aliases":["Stanton1_Lorville","Lorville","ObjectContainer_Lorville_City"]},
   {"name":"Orison","system":"Stanton","aliases":["Stanton2_Orison","Orison"]},
   {"name":"Area18","system":"Stanton","aliases":["Stanton3_Area18","Area18","Area_18"]},
   {"name":"New Babbage","system":"Stanton","aliases":["Stanton4_NewBabbage","NewBabbage","New_Babbage"]},
@@ -57,12 +57,20 @@
   {"name":"Fuego","system":"Pyro","aliases":["Pyro5e","Fuego"]},
   {"name":"Vuur","system":"Pyro","aliases":["Pyro5f","Vuur"]},
   {"name":"Checkmate Station","system":"Pyro","aliases":["Checkmate","Checkmate_Station"]},
-  {"name":"Orbituary","system":"Pyro","aliases":["Orbituary","Orbituary_Station"]},
-  {"name":"Ruin Station","system":"Pyro","aliases":["RuinStation","Ruin_Station"]},
+  {"name":"Orbituary","system":"Pyro","aliases":["Orbituary","Orbituary_Station","RR_P3_LEO","rs_ext_pyro3_leo"]},
+  {"name":"Ruin Station","system":"Pyro","aliases":["RuinStation","Ruin_Station","RR_P6_LEO","rs_ext_pyro6_leo"]},
   {"name":"Pyro system","system":"Pyro","aliases":["Pyro","PyroStar"]},
   {"name":"Levski","system":"Nyx","aliases":["Levski","Delamar_Levski","Nyx_Delamar_Levski"]},
+  {"name":"Nyx - Pyro Jump Point","system":"Nyx","aliases":["rs_ext_nyx-pyro_jp1"]},
+  {"name":"Pyro Gateway (Nyx)","system":"Nyx","aliases":["RR_JP_NyxPyro"]},
   {"name":"Delamar","system":"Nyx","aliases":["Delamar","Nyx_Delamar"]},
   {"name":"People's Service Station","system":"Nyx","aliases":["PeoplesServiceStation","Peoples_Service_Station"]},
   {"name":"Nyx system","system":"Nyx","aliases":["Nyx","NyxStar"]},
-  {"name":"Cry-Astro Processing Plant 34-12","system":"Stanton","aliases":["Stanton4_DistributionCentre_Astro_Plant34-12"]}
+  {"name":"Cry-Astro Processing Plant 34-12","system":"Stanton","aliases":["Stanton4_DistributionCentre_Astro_Plant34-12"]},
+  {"name":"Nyx Gateway (Pyro)","system":"Pyro","aliases":["RR_JP_PyroNyx"]},
+  {"name":"Pyro-Stanton Jump Point","system":"Pyro","aliases":["rs_ext_pyro-stan_jp1"]},
+  {"name":"PYR2 L4","system":"Pyro","aliases":["rs_ext_pyro2_l4"]},
+  {"name":"Checkmate","system":"Pyro","aliases":["RR_P2_L4"]},
+  {"name":"Stanton Gateway (Pyro)","system":"Pyro","aliases":["RR_JP_PyroStanton"]},
+  {"name":"Pyro Gateway (Stanton)","system":"Stanton","aliases":["RR_JP_StantonPyro"]}
 ]

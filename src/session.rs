@@ -3,7 +3,7 @@ use crate::{
     parser::Event,
 };
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Phase {
@@ -22,9 +22,14 @@ pub struct Session {
     pub ship: Option<String>,
     pub contracts: BTreeSet<String>,
     pub location: Option<(Location, i64)>,
+    pub route_origin: Option<(Location, i64)>,
     pub incapacitated_at: Option<i64>,
     pub notice: Option<(String, String, i64)>,
+    pub last_atc: Option<i64>,
     target: Option<(String, String, i64)>,
+    loading_screen_open: bool,
+    inventory_zone: Option<(u64, i64)>,
+    inventory_zones: HashMap<u64, Location>,
 }
 
 impl Session {
@@ -36,9 +41,14 @@ impl Session {
             ship: None,
             contracts: BTreeSet::new(),
             location: None,
+            route_origin: None,
             incapacitated_at: None,
             notice: None,
+            last_atc: None,
             target: None,
+            loading_screen_open: false,
+            inventory_zone: None,
+            inventory_zones: HashMap::new(),
         }
     }
 
@@ -46,9 +56,23 @@ impl Session {
         self.ship = None;
         self.contracts.clear();
         self.location = None;
+        self.route_origin = None;
         self.target = None;
         self.incapacitated_at = None;
         self.notice = None;
+        self.last_atc = None;
+        self.inventory_zone = None;
+        self.inventory_zones.clear();
+    }
+
+    fn remember_inventory_zone(&mut self, at: i64, window: i64) {
+        if let (Some((zone, changed)), Some((known, _))) =
+            (self.inventory_zone, self.location.as_ref())
+            && (0..=window).contains(&(at - changed))
+            && (self.inventory_zones.len() < 128 || self.inventory_zones.contains_key(&zone))
+        {
+            self.inventory_zones.insert(zone, known.clone());
+        }
     }
 
     pub fn apply(&mut self, event: Event, at: i64, locations: &Locations) {
@@ -71,6 +95,14 @@ impl Session {
                 self.clear_gameplay();
                 self.phase = Phase::Loading;
             }
+            Event::LoadingScreenOpened => {
+                self.clear_gameplay();
+                self.loading_screen_open = true;
+            }
+            Event::LoadingScreenClosed { menu } => {
+                self.loading_screen_open = false;
+                self.phase = if menu { Phase::Menu } else { Phase::Playing };
+            }
             Event::Ready => {
                 if self.phase != Phase::Menu {
                     self.phase = Phase::Playing;
@@ -78,10 +110,12 @@ impl Session {
             }
             Event::Disconnect => {
                 self.clear_gameplay();
+                self.loading_screen_open = false;
                 self.phase = Phase::Menu;
             }
             Event::Shutdown => {
                 self.clear_gameplay();
+                self.loading_screen_open = false;
                 self.phase = Phase::Stopped;
             }
             Event::Inventory { player, location } => {
@@ -92,8 +126,39 @@ impl Session {
                     .is_some_and(|h| h.eq_ignore_ascii_case(&player))
                 {
                     self.phase = Phase::Playing;
+                    self.route_origin = None;
                     self.location = locations.find(&location).map(|l| (l, at));
+                    self.remember_inventory_zone(at, 2);
                     self.incapacitated_at = None;
+                }
+            }
+            Event::InventoryTransition {
+                player,
+                location_id,
+            } => {
+                if self
+                    .handle
+                    .as_ref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&player))
+                {
+                    self.inventory_zone = (location_id != 0).then_some((location_id, at));
+                    if let Some(known) = self.inventory_zones.get(&location_id) {
+                        self.location = Some((known.clone(), at));
+                    }
+                    // Unknown zones do not refresh the last verified sighting.
+                }
+            }
+            Event::InventoryTerminal {
+                player,
+                location_id,
+            } => {
+                if self
+                    .handle
+                    .as_ref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&player))
+                    && let Some(location) = self.inventory_zones.get(&location_id)
+                {
+                    self.location = Some((location.clone(), at));
                 }
             }
             Event::QuantumTarget {
@@ -106,17 +171,69 @@ impl Session {
                 }
                 self.target = Some((vehicle, destination, at));
             }
+            Event::RouteOrigin {
+                vehicle,
+                destination,
+                origin,
+            } => {
+                if self.phase == Phase::Playing
+                    && self
+                        .target
+                        .as_ref()
+                        .is_some_and(|(tracked, selected, time)| {
+                            tracked == &vehicle
+                                && selected == &destination
+                                && (0..=2).contains(&(at - time))
+                        })
+                    && let Some(location) = locations.find_route_origin(
+                        &origin,
+                        self.location
+                            .as_ref()
+                            .filter(|(_, seen)| (0..=120).contains(&(at - seen)))
+                            .map(|(location, _)| location.system.as_str()),
+                    )
+                {
+                    self.route_origin = Some((location, at));
+                }
+            }
+            Event::AtcContact { player, location } => {
+                if self.phase == Phase::Playing
+                    && self
+                        .handle
+                        .as_ref()
+                        .is_some_and(|h| h.eq_ignore_ascii_case(&player))
+                {
+                    self.last_atc = Some(at);
+                    if let Some(location) =
+                        location.as_deref().and_then(|name| locations.find(name))
+                    {
+                        self.location = Some((location, at));
+                    }
+                }
+            }
             Event::QuantumArrival { vehicle } => {
-                self.location = None;
-                if let Some((target_vehicle, target, selected)) = self.target.take() {
-                    if target_vehicle == vehicle && (0..=600).contains(&(at - selected)) {
+                if self
+                    .target
+                    .as_ref()
+                    .is_some_and(|(tracked, _, _)| tracked == &vehicle)
+                    && let Some((_, target, selected)) = self.target.take()
+                {
+                    self.last_atc = None;
+                    self.route_origin = None;
+                    if (0..=600).contains(&(at - selected)) {
                         self.phase = Phase::Playing;
                         // Unknown/mission destinations invalidate the previous location.
                         self.location = locations.find(&target).map(|l| (l, at));
+                        if self
+                            .inventory_zone
+                            .is_some_and(|(_, changed)| changed >= selected)
+                        {
+                            self.remember_inventory_zone(at, 15);
+                        }
+                    } else {
+                        self.location = None;
                     }
-                } else {
-                    // Without a selected target we know travel occurred, but not where.
-                    self.location = None;
+                    self.inventory_zone = None;
                 }
             }
             Event::Board(ship) => {
@@ -141,7 +258,6 @@ impl Session {
             }
             Event::Incapacitated => {
                 self.incapacitated_at = Some(at);
-                self.location = None;
                 self.target = None;
                 self.notice = None;
             }
@@ -152,15 +268,21 @@ impl Session {
                 self.phase = Phase::Playing;
                 self.ship = None;
                 self.location = None;
+                self.route_origin = None;
                 self.target = None;
                 self.incapacitated_at = None;
                 self.notice = None;
+                self.last_atc = None;
+                self.inventory_zone = None;
             }
             Event::Notice { details, state } => {
                 if self.phase == Phase::Playing {
                     self.notice = Some((details, state, at));
                 }
             }
+        }
+        if self.loading_screen_open {
+            self.phase = Phase::Loading;
         }
     }
 }
@@ -273,6 +395,14 @@ mod tests {
             5,
             &locations(),
         );
+        s.apply(
+            Event::QuantumArrival {
+                vehicle: "unrelated_ship".into(),
+            },
+            6,
+            &locations(),
+        );
+        assert_eq!(s.location.as_ref().unwrap().0.name, "Area18");
         s.apply(
             Event::QuantumArrival {
                 vehicle: "ship1".into(),
