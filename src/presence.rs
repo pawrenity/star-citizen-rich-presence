@@ -144,32 +144,27 @@ fn location_art<'a>(location: &crate::locations::Location, config: &'a Config) -
     if let Some(url) = artwork.get(&format!("{}:{}", location.system, location.name)) {
         return url;
     }
-    if config.discord_app_id == crate::config::DEFAULT_APP_ID && location.system == "Stanton" {
-        // Exact matches first. For a POI, prefer its moon over the parent planet.
-        const ART: &[(&str, &str)] = &[
-            ("Grim HEX", "grimhex"),
-            ("Port Olisar", "portolisar"),
-            ("Area18", "area18"),
-            ("Daymar", "daymar"),
-            ("Yela", "yela"),
-            ("Cellin", "cellin"),
-            ("Crusader", "crusader"),
-            ("Hurston", "hurston"),
-            ("microTech", "microtech"),
-            ("ArcCorp", "arccorp"),
+    if location.system == "Stanton" {
+        // Preserve parent artwork for unmapped POIs, preferring moons over planets.
+        const PARENTS: &[&str] = &[
+            "Grim HEX",
+            "Area18",
+            "Daymar",
+            "Yela",
+            "Cellin",
+            "Crusader",
+            "Hurston",
+            "microTech",
+            "ArcCorp",
         ];
-        for (name, asset) in ART {
-            if location.name.eq_ignore_ascii_case(name) {
-                return asset;
-            }
-        }
-        for (name, asset) in ART {
+        for name in PARENTS {
             if location
                 .scopes
                 .iter()
                 .any(|scope| scope.eq_ignore_ascii_case(name))
+                && let Some(url) = artwork.get(&format!("Stanton:{name}"))
             {
-                return asset;
+                return url;
             }
         }
     }

@@ -148,8 +148,9 @@ file's folder. LIVE, PTU, EPTU, and TECH-PREVIEW are supported.
 
 The original Discord application ID remains the default. You can select your own
 with `--app-id`. The displayed game name and images belong to that Discord
-application. Supported Stanton locations use existing planet, moon, or station
-artwork by default. The app also bundles direct image links for 37 exact locations from the Star Citizen Wiki, including both Nyx–Pyro gateway stations. Other locations without artwork use the default logo. Discord loads
+application. The app bundles direct Star Citizen Wiki image links for 39 locations,
+including both Nyx–Pyro gateway stations. Some Stanton points use artwork of their
+parent moon or planet. Locations without artwork use the default logo. Discord loads
 these images when displaying the card. Use `[image_assets]` to override a location
 with an asset key from your Discord application or a public HTTPS image URL.
 

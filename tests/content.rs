@@ -231,7 +231,10 @@ fn levski_survives_incapacitation_and_local_atc_refreshes_it() {
     let card = presence::snapshot(&session, &Config::default(), 1301).unwrap();
     assert_eq!(card.details, "Levski");
     assert_eq!(card.state, "Nyx · LIVE");
-    assert!(card.large_image.contains("Levski_-_Above_complex"));
+    assert!(
+        card.large_image
+            .contains("Levski_-_Above_whith_ships_flying_around")
+    );
 }
 
 #[test]
