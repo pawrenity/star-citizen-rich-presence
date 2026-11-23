@@ -201,14 +201,32 @@ pub fn post_multipart(
             request.0,
             headers.as_ptr(),
             u32::MAX,
-            payload.as_ptr().cast(),
-            total_len,
+            null(),
+            0,
             total_len,
             0,
         ) == 0
-            || WinHttpReceiveResponse(request.0, null_mut()) == 0
         {
-            return Err(last_error("Uploading"));
+            return Err(last_error("Sending upload headers"));
+        }
+        let mut written_total = 0usize;
+        while written_total < payload.len() {
+            let chunk = &payload[written_total..(written_total + 65_536).min(payload.len())];
+            let mut written = 0u32;
+            if WinHttpWriteData(
+                request.0,
+                chunk.as_ptr().cast(),
+                chunk.len() as u32,
+                &mut written,
+            ) == 0
+            {
+                return Err(last_error("Uploading"));
+            }
+            ensure!(written > 0, "Upload stalled");
+            written_total += written as usize;
+        }
+        if WinHttpReceiveResponse(request.0, null_mut()) == 0 {
+            return Err(last_error("Waiting for upload response"));
         }
         let mut status = 0u32;
         let mut size = 4u32;
@@ -255,8 +273,17 @@ pub fn post_multipart(
     .with_context(|| format!("Could not upload to {url}"))
 }
 
-/// Uploads a PNG image to catbox.moe and returns its direct HTTPS URL.
-pub fn upload_image(png_bytes: &[u8]) -> Result<String> {
+fn validate_upload_url(url: &str) -> Result<String> {
+    let url = url.trim().to_string();
+    ensure!(
+        url.starts_with("https://") && url.len() <= 256 && !url.contains(char::is_whitespace),
+        "Upload host returned unexpected response: {}",
+        if url.is_empty() { "(empty)" } else { &url }
+    );
+    Ok(url)
+}
+
+fn upload_catbox(png_bytes: &[u8]) -> Result<String> {
     let response = post_multipart(
         "https://catbox.moe/user/api.php",
         &[("reqtype", "fileupload")],
@@ -266,15 +293,35 @@ pub fn upload_image(png_bytes: &[u8]) -> Result<String> {
         png_bytes,
         4096,
     )?;
-    let url = String::from_utf8(response)
-        .context("Upload host returned non-UTF-8 response")?
-        .trim()
-        .to_string();
-    ensure!(
-        url.starts_with("https://") && url.len() <= 256 && !url.contains(char::is_whitespace),
-        "Upload host returned unexpected response: {url}"
-    );
-    Ok(url)
+    let text = String::from_utf8(response).context("Upload host returned non-UTF-8 response")?;
+    validate_upload_url(&text)
+}
+
+fn upload_pomf(png_bytes: &[u8]) -> Result<String> {
+    let response = post_multipart(
+        "https://pomf2.lain.la/upload.php",
+        &[],
+        "files[]",
+        "image.png",
+        "image/png",
+        png_bytes,
+        16_384,
+    )?;
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&response).context("Fallback upload host returned invalid JSON")?;
+    let url = parsed["files"][0]["url"]
+        .as_str()
+        .context("Fallback upload host did not return a file URL")?;
+    validate_upload_url(url)
+}
+
+/// Uploads a PNG image to catbox.moe (retrying once on transient errors, then falling back to
+/// pomf2.lain.la) and returns its direct HTTPS URL.
+pub fn upload_image(png_bytes: &[u8]) -> Result<String> {
+    if let Ok(url) = upload_catbox(png_bytes).or_else(|_| upload_catbox(png_bytes)) {
+        return Ok(url);
+    }
+    upload_pomf(png_bytes)
 }
 
 #[cfg(test)]
@@ -297,8 +344,14 @@ mod tests {
         img.write_to(&mut out, image::ImageFormat::Png).unwrap();
         let bytes = out.into_inner();
         println!("uploading {} bytes", bytes.len());
-        let url = upload_image(&bytes).unwrap();
-        println!("uploaded to {url}");
-        assert!(url.starts_with("https://files.catbox.moe/"), "got {url}");
+        let catbox = upload_catbox(&bytes).unwrap();
+        println!("catbox: {catbox}");
+        assert!(
+            catbox.starts_with("https://files.catbox.moe/"),
+            "got {catbox}"
+        );
+        let pomf = upload_pomf(&bytes).unwrap();
+        println!("pomf: {pomf}");
+        assert!(pomf.starts_with("https://pomf2.lain.la/"), "got {pomf}");
     }
 }
