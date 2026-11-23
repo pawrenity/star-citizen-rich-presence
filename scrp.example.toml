@@ -12,6 +12,7 @@ show_notifications = true # short-lived blueprint, refinery, and hangar notices
 show_ship = true
 show_party = true # adds "In a party" while you are in a party
 show_artwork = true # wiki artwork for locations, ships, and mission types
+check_for_updates = true # the control panel asks GitHub for new releases (no personal data)
 
 # The verb in front of the game name: playing, listening, watching, or competing.
 # The game name itself is your Discord application's name: to show "Listening to

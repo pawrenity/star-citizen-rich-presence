@@ -75,11 +75,18 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#ExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; The in-app updater runs setup silently with /UPDATE; reopen the app afterwards.
+Filename: "{app}\{#ExeName}"; Flags: nowait; Check: IsUpdate
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#ExeName}"; Flags: runhidden; RunOnceId: "StopApp"
 
 [Code]
+function IsUpdate: Boolean;
+begin
+  Result := Pos('/UPDATE', Uppercase(GetCmdTail)) > 0;
+end;
+
 const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   RunName = 'StarCitizenRichPresence';

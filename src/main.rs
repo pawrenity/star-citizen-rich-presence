@@ -149,7 +149,7 @@ fn command_line() -> Result<()> {
         signal.store(false, Ordering::SeqCst);
     })
     .context("Cannot install shutdown handler")?;
-    monitor(args, config, locations, running, |_, _| true)
+    monitor(args, config, locations, running, |_, _| true, |_| {})
 }
 
 fn monitor(
@@ -158,6 +158,7 @@ fn monitor(
     locations: Locations,
     running: Arc<AtomicBool>,
     mut desktop: impl FnMut(&mut Config, Option<&str>) -> bool,
+    mut preview: impl FnMut(Option<&Snapshot>),
 ) -> Result<()> {
     let mut system = System::new();
     println!(
@@ -288,6 +289,7 @@ fn monitor(
                     .map_or("Waiting for Star Citizen", |s| &s.details)
             }),
         );
+        preview(desired.as_ref());
         let deadline = Instant::now() + Duration::from_secs(config.poll_seconds);
         while running.load(Ordering::SeqCst) && Instant::now() < deadline {
             if desktop(&mut effective, None) != enabled {

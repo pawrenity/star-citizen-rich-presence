@@ -9,12 +9,26 @@ fn load(cell: &'static OnceLock<Choices>, json: &str) -> &'static Choices {
     cell.get_or_init(|| serde_json::from_str(json).expect("bundled artwork must be valid JSON"))
 }
 
-/// Wiki artwork choices for a ship, keyed by its catalogue display name.
-pub fn ship_choices(name: &str) -> &'static [String] {
+fn ships() -> &'static Choices {
     static SHIPS: OnceLock<Choices> = OnceLock::new();
     load(&SHIPS, include_str!("../data/ship-artwork.json"))
+}
+
+/// Wiki artwork choices for a ship, keyed by its catalogue display name.
+pub fn ship_choices(name: &str) -> &'static [String] {
+    ships()
         .get(name)
         .map_or(&[], Vec::as_slice)
+}
+
+/// Every ship with bundled artwork, alphabetically.
+pub fn ship_names() -> Vec<&'static str> {
+    let mut names: Vec<_> = ships()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 /// Default wiki artwork for a ship.

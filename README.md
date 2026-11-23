@@ -43,15 +43,29 @@ timer.
 The control panel opens and waits for Star Citizen. Your status clears when the game
 closes. You normally don't need administrator rights.
 
-In the control panel you can:
+The control panel shows a live preview of your card at the top, with the ship art and
+contract badge, and a page for each group of settings on the left:
 
-- pause or resume sharing,
-- start the app hidden in the tray when you sign in to Windows (keep the exe in one
-  folder; if you move it, turn this off and on again),
-- turn location, ship, artwork, RSI profile, contracts, and notices on or off,
-- replace the card's second and third lines with your own text (clear a field and click
-  **Apply** to go back to automatic text),
-- add up to two Discord buttons.
+- **Card:** turn location, ship, contracts, party status, notices, the RSI profile button,
+  and wiki artwork on or off; pause sharing; start with Windows (keep the exe in one
+  folder; if you move it, turn this off and on again); check for updates.
+- **Activity:** choose Playing, Listening to, Watching, or Competing in, what the member
+  list shows, and your own text for lines 2 and 3 (leave empty for automatic text).
+- **Images:** set your own picture for a ship or contract type. **Browse wiki artwork**
+  opens the artwork picker; paste a copied line into the name box and click **Set**.
+- **Buttons:** up to two Discord buttons.
+- **Updates:** see whether a new version is out and install it.
+
+Toggles and dropdowns apply immediately; text fields and buttons apply when you click
+**Apply**.
+
+### Updates
+
+When a new version is released, a banner appears at the top of the control panel. If you
+used the installer, **Update now** downloads the new installer, checks it against the
+release's `SHA256SUMS.txt`, installs it, and reopens the app. Portable copies link to the
+release page instead. Turn checks off with **Check for updates automatically** or
+`check_for_updates = false` in `scrp.toml`.
 
 Closing or minimising the window sends it to the tray. Left-click the tray icon to reopen
 it; right-click for pause and quit. Panel preferences are saved in
@@ -90,6 +104,7 @@ as they are.
 | `show_location` | `true` | Show where you are |
 | `show_ship` | `true` | Show your ship |
 | `show_party` | `true` | Show "In a party" |
+| `check_for_updates` | `true` | Let the control panel check GitHub for new versions |
 | `show_artwork` | `true` | Use wiki artwork for locations, ships, and contract types |
 | `show_profile` | `true` | Add the RSI profile button |
 | `show_contracts` | `true` | Show contract titles and badges |
@@ -132,8 +147,12 @@ bounty = "2"
 - **Values** can be a number (pick that wiki image; `1` is the default), a public
   `https://` image link, or the name of an image uploaded to your own Discord application.
 
-Discord can only show images from the internet or from a Discord application, so files on
-your PC won't work. Upload them somewhere public first.
+Discord can only show images from the internet or from a Discord application, so local
+file paths won't work in `scrp.toml`. In the control panel's **Images** page, you can
+click **Upload image** to pick a PNG, JPEG, or WebP from your PC — it is resized to at
+most 512×512 PNG (stripping EXIF/GPS metadata) and uploaded to `catbox.moe` as a public
+`https://` link so Discord can display it. You can also paste any existing `https://` link
+directly.
 
 ### "Listening to Scam Citizen"
 
@@ -185,9 +204,17 @@ in the console. In PowerShell, use `Start-Process -Wait -NoNewWindow` to see its
 ## Privacy
 
 - **Read-only.** No memory reading, code injection, screenshots, or config changes.
-- **Nothing leaves your PC except the card.** The app talks only to Discord on your own
-  computer. Game data and image links are built in, so it doesn't download anything while
-  you play. Discord itself loads the card images from the Star Citizen Wiki.
+- **Nothing about you leaves your PC except the card.** Your status goes only to Discord on
+  your own computer. The control panel also makes two kinds of plain web requests, neither
+  of which includes anything about you or your game:
+  - it asks GitHub for the latest release when it starts and once a day (turn off with
+    **Check for updates automatically**), and downloads an update only when you click
+    **Update now**;
+  - it downloads the pictures shown in the preview (from the Star Citizen Wiki, or your own
+    image links), the same ones Discord loads for your card. Turning off **Wiki artwork**
+    stops this.
+
+  The command-line mode makes no web requests.
 - **Your logs stay with you.** The card can reveal your location, ship, contract, party
   status, and RSI profile. Each can be turned off.
 - **Only your own events count.** Locations are matched to your logged-in handle, so other
@@ -285,8 +312,11 @@ made-up, anonymised session built from real 4.10 event shapes. Details and limit
 | Module | Does |
 | --- | --- |
 | `artwork` | Ship and contract artwork, contract types, image overrides |
+| `net` | Minimal HTTPS downloads over Windows WinHTTP |
+| `thumbnail` | Decoding and masking preview artwork |
+| `update` | GitHub release checks, checksum verification, silent install |
 | `config` | Command-line flags, `scrp.toml`, validation |
-| `desktop` | Control panel, tray, start-with-Windows, saved preferences |
+| `desktop` | Control panel (sidebar pages, live card preview, update banner), tray, start-with-Windows, saved preferences |
 | `discord` | Local Discord connection and activity messages |
 | `discovery` | Finding the running game and its `Game.log` |
 | `locations` | Built-in and custom location aliases |

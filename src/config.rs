@@ -72,6 +72,8 @@ pub struct Config {
     pub show_location: bool,
     pub show_ship: bool,
     pub show_party: bool,
+    /// Ask GitHub for a newer release on start and daily (desktop app only).
+    pub check_for_updates: bool,
     pub show_artwork: bool,
     pub custom_state: String,
     pub custom_details: String,
@@ -105,6 +107,7 @@ impl Default for Config {
             show_location: true,
             show_ship: true,
             show_party: true,
+            check_for_updates: true,
             show_artwork: true,
             custom_state: String::new(),
             custom_details: String::new(),

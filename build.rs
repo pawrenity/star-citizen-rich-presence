@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/scrp.rc");
     println!("cargo:rerun-if-changed=assets/scrp.ico");
+    println!("cargo:rerun-if-changed=assets/scrp.manifest");
     embed_resource::compile_for(
         "assets/scrp.rc",
         ["star-citizen-rich-presence"],
