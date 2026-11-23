@@ -44,7 +44,15 @@ h2 { font-size:16px; margin:0 0 8px; }
 <main class="wrap" id="list"></main>
 <div class="toast" id="toast" role="status"></div>
 <script>
-const DATA = /*ARTWORK_DATA*/null;
+const RAW = /*ARTWORK_DATA*/null;
+// Wiki thumbnails are stored as "h/hh/File.ext"; full URLs are kept as they are.
+const expand = entry => {
+  if (entry.startsWith("https://")) return entry;
+  const name = entry.split("/").pop();
+  return `https://media.starcitizen.tools/thumb/${entry}/480px-${/\.webp$/i.test(name) ? name : `${name}.webp`}`;
+};
+const expandAll = art => Object.fromEntries(Object.entries(art).map(([k, list]) => [k, list.map(expand)]));
+const DATA = { ...RAW, ships: expandAll(RAW.ships), missions: expandAll(RAW.missions) };
 const LABELS = { bounty:'Bounty hunting', mercenary:'Mercenary', hauling:'Cargo hauling', delivery:'Delivery', mining:'Mining', salvage:'Salvage', rescue:'Search and rescue', investigation:'Investigation', racing:'Racing', xenothreat:'XenoThreat', wikelo:'Wikelo', arena:'Arena Commander' };
 let tab = 'ships', limit = 40;
 const list = document.getElementById('list'), q = document.getElementById('q'), toast = document.getElementById('toast');

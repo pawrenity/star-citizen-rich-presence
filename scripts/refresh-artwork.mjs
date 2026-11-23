@@ -11,7 +11,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const api = 'https://api.star-citizen.wiki/api';
 const wiki = 'https://starcitizen.tools/api.php';
 const headers = { 'User-Agent': 'star-citizen-rich-presence artwork refresh (developer tool)' };
-const MAX_CHOICES = 16;
+const MAX_CHOICES = 120;
 
 async function json(url) {
   // Be polite to the wiki: pace requests and honour rate limits.
@@ -178,11 +178,26 @@ async function save(path, text) {
   await writeFile(`${path}.tmp`, text);
   await rename(`${path}.tmp`, path);
 }
-await save(join(root, 'data/ship-artwork.json'), `${JSON.stringify(shipArt, null, 1)}\n`);
-await save(join(root, 'data/mission-artwork.json'), `${JSON.stringify(missionArt, null, 1)}\n`);
+// Most links are wiki thumbnails; store just "h/hh/File.ext" for those (src/artwork.rs and
+// the gallery expand them again). Anything that would not round-trip stays a full URL.
+const WIKI = /^https:\/\/media\.starcitizen\.tools\/thumb\/([0-9a-f]\/[0-9a-f]{2}\/[^/]+)\/480px-.+$/;
+const expand = entry => {
+  if (entry.startsWith('https://')) return entry;
+  const name = entry.split('/').pop();
+  return `https://media.starcitizen.tools/thumb/${entry}/480px-${/\.webp$/i.test(name) ? name : `${name}.webp`}`;
+};
+const compact = url => {
+  const short = url.match(WIKI)?.[1] ?? url;
+  return expand(short) === url ? short : url;
+};
+const compactAll = art => Object.fromEntries(Object.entries(art).map(([k, list]) => [k, list.map(compact)]));
+const ships = compactAll(shipArt);
+const missions = compactAll(missionArt);
+await save(join(root, 'data/ship-artwork.json'), `${JSON.stringify(ships)}\n`);
+await save(join(root, 'data/mission-artwork.json'), `${JSON.stringify(missions, null, 1)}\n`);
 
 const template = await readFile(join(root, 'scripts/artwork-gallery.template.html'), 'utf8');
-const data = JSON.stringify({ ships: shipArt, missions: missionArt, game_version: source.game_version }).replace(/</g, '\\u003c');
+const data = JSON.stringify({ ships, missions, game_version: source.game_version }).replace(/</g, '\\u003c');
 await save(join(root, 'assets/artwork-gallery.html'), template.replace('/*ARTWORK_DATA*/null', data));
 
 const names = new Set([...vehicles.map(v => v.name), ...Object.keys(EXTRA_SHIPS)]);

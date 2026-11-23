@@ -136,15 +136,18 @@ pub fn download(release: &Release) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// Starts the verified installer silently; it closes this app and reopens it.
+/// Starts the verified installer silently in the background; it replaces the exe and auto-restarts with no user input.
 #[cfg(windows)]
 pub fn launch(installer: &std::path::Path) -> Result<()> {
     std::process::Command::new(installer)
         .args([
+            "/SP-",
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
+            "/CURRENTUSER",
             "/CLOSEAPPLICATIONS",
+            "/FORCECLOSEAPPLICATIONS",
             "/UPDATE",
         ])
         .spawn()

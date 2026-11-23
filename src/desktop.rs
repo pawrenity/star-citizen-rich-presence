@@ -59,6 +59,8 @@ const IMAGE_LINK: i32 = 133;
 const USE_LINK: i32 = 134;
 const USE_DEFAULT: i32 = 135;
 const UPLOAD_IMAGE: i32 = 136;
+const IMG_PREV: i32 = 137;
+const IMG_NEXT: i32 = 138;
 const UPDATE_NOW: i32 = 140;
 const RELEASE_NOTES: i32 = 141;
 const UPDATE_ACTION: i32 = 142;
@@ -456,6 +458,8 @@ struct Desktop {
     targets: Vec<Target>,
     /// Index into `targets` shown on the Images page.
     target: Cell<usize>,
+    /// 0-based page index into `choices()` on the Images page (18 tiles per page).
+    image_page: Cell<usize>,
 }
 
 /// A ship or contract type whose picture can be customised.
@@ -490,15 +494,30 @@ impl Desktop {
         &self.targets[self.target.get().min(self.targets.len() - 1)]
     }
 
-    /// Wiki pictures for the selected ship or contract type.
+    /// All wiki pictures for the selected ship or contract type.
     fn choices(&self) -> &'static [String] {
         let target = self.current_target();
-        let all = if target.mission {
+        if target.mission {
             artwork::mission_choices(&target.key)
         } else {
             artwork::ship_choices(&target.key)
-        };
-        &all[..all.len().min(MAX_CHOICES)]
+        }
+    }
+
+    fn image_page_count(&self) -> usize {
+        self.choices().len().div_ceil(MAX_CHOICES).max(1)
+    }
+
+    fn current_image_page(&self) -> usize {
+        self.image_page.get().min(self.image_page_count() - 1)
+    }
+
+    /// `(offset, slice)` of up to `MAX_CHOICES` pictures for the current page.
+    fn visible_choices(&self) -> (usize, &'static [String]) {
+        let all = self.choices();
+        let offset = self.current_image_page() * MAX_CHOICES;
+        let end = (offset + MAX_CHOICES).min(all.len());
+        (offset, &all[offset..end])
     }
 
     /// The saved picture for the selected target: the panel's choice, else scrp.toml's.
@@ -724,6 +743,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             field: Cell::new(CreateSolidBrush(initial_theme.field)),
             targets: targets(),
             target: Cell::new(0),
+            image_page: Cell::new(0),
         });
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let mut frame = RECT {
@@ -1023,11 +1043,24 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             );
         }
         // Images page.
+        let paged = desktop.image_page_count() > 1;
         place(
             hwnd,
             IMAGE_TARGET,
             page == IMAGES,
-            rect(LEFT, top + 26, 330, 320),
+            rect(LEFT, top + 26, if paged { 260 } else { 330 }, 320),
+        );
+        place(
+            hwnd,
+            IMG_PREV,
+            page == IMAGES && paged,
+            rect(LEFT + 268, top + 26, 58, 30),
+        );
+        place(
+            hwnd,
+            IMG_NEXT,
+            page == IMAGES && paged,
+            rect(LEFT + 332, top + 26, 58, 30),
         );
         place(
             hwnd,
@@ -1041,12 +1074,12 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             page == IMAGES,
             rect(RIGHT - 130, top + 26, 130, 30),
         );
-        let pictures = desktop.choices().len();
+        let (_, visible) = desktop.visible_choices();
         for index in 0..MAX_CHOICES {
             place(
                 hwnd,
                 CHOICE + index as i32,
-                page == IMAGES && index < pictures,
+                page == IMAGES && index < visible.len(),
                 choice_rect(top, index),
             );
         }
@@ -1262,6 +1295,8 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
             256,
         );
         button(USE_LINK, "Use link");
+        button(IMG_PREV, "‹ Prev");
+        button(IMG_NEXT, "Next ›");
         button(UPLOAD_IMAGE, "Upload image");
         button(USE_DEFAULT, "Use default");
         for index in 0..MAX_CHOICES {
@@ -1998,7 +2033,10 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
             }
             IMAGES => {
                 let uploading = matches!(*desktop.upload.lock().unwrap(), UploadState::Uploading);
-                let status = if uploading {
+                let total = desktop.choices().len();
+                let pages = desktop.image_page_count();
+                let page_num = desktop.current_image_page() + 1;
+                let base_status = if uploading {
                     "Uploading image…".to_string()
                 } else {
                     match desktop.selected_choice() {
@@ -2007,8 +2045,13 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                         None => "Using your own image".to_string(),
                     }
                 };
+                let status = if pages > 1 {
+                    format!("{base_status} · Page {page_num} of {pages} ({total} pictures)")
+                } else {
+                    base_status
+                };
                 heading(dc, desktop, top, "Custom images", &status);
-                let count = desktop.choices().len();
+                let count = total;
                 if count == 0 {
                     text(
                         dc,
@@ -2113,7 +2156,6 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 let r = updates_row(top);
                 shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
                 let state = desktop.update.lock().unwrap().clone();
-                let installed = update::installed_copy();
                 let (title, description) = match &state {
                     UpdateState::Idle => (
                         "Updates".to_string(),
@@ -2133,10 +2175,10 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     ),
                     UpdateState::Available(release) => (
                         format!("Version {} is available", release.version),
-                        if installed {
-                            "Downloads, verifies, and installs it, then reopens the app.".into()
+                        if release.installer_url.is_some() && release.sums_url.is_some() {
+                            "Downloads, verifies, and installs the update, then reopens.".into()
                         } else {
-                            "This is the portable copy: download the new version from the release page.".into()
+                            "Download the new version from the GitHub release page.".into()
                         },
                     ),
                     UpdateState::Downloading(release) => (
@@ -2148,7 +2190,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     &title,
-                    rect(r.left + 14, r.top + 12, 420, 20),
+                    rect(r.left + 14, r.top + 12, 340, 20),
                     f.body_semi,
                     TEXT,
                     LEFT_LINE,
@@ -2156,7 +2198,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     &description,
-                    rect(r.left + 14, r.top + 34, 400, 18),
+                    rect(r.left + 14, r.top + 34, 340, 18),
                     f.small,
                     MUTED,
                     LEFT_LINE,
@@ -2448,7 +2490,8 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             );
         } else if (CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id) {
             // Picture tile: the wiki image, a number chip, and a highlight when in use.
-            let index = (id - CHOICE) as usize;
+            let (offset, _) = desktop.visible_choices();
+            let index = offset + (id - CHOICE) as usize;
             let (w, h) = (r.right - r.left, r.bottom - r.top);
             let picture = desktop.choices().get(index).and_then(|url| {
                 want_thumbnail(
@@ -2783,7 +2826,9 @@ unsafe fn refresh(hwnd: HWND, desktop: &Desktop) {
         if *desktop.painted.borrow() != signature {
             *desktop.painted.borrow_mut() = signature;
             let label = match &state {
-                UpdateState::Available(_) if update::installed_copy() => "Update now",
+                UpdateState::Available(r) if r.installer_url.is_some() && r.sums_url.is_some() => {
+                    "Update now"
+                }
                 UpdateState::Available(_) => "Open release page",
                 UpdateState::Downloading(_) | UpdateState::Checking => "Working…",
                 _ => "Check now",
@@ -2819,7 +2864,9 @@ unsafe fn start_update(hwnd: HWND, desktop: &Desktop) {
     unsafe {
         let state = desktop.update.lock().unwrap().clone();
         match state {
-            UpdateState::Available(release) if update::installed_copy() => {
+            UpdateState::Available(release)
+                if release.installer_url.is_some() && release.sums_url.is_some() =>
+            {
                 *desktop.update.lock().unwrap() = UpdateState::Downloading(release.clone());
                 let shared = Arc::clone(&desktop.update);
                 let handle = hwnd as isize;
@@ -2996,8 +3043,27 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                         }
                     }
                     n if (CHOICE..CHOICE + MAX_CHOICES as i32).contains(&n) => {
-                        let index = (n - CHOICE) as usize;
+                        let (offset, _) = desktop.visible_choices();
+                        let index = offset + (n - CHOICE) as usize;
                         set_picture(hwnd, desktop, (index > 0).then(|| (index + 1).to_string()));
+                    }
+                    IMG_PREV => {
+                        let page = desktop.current_image_page();
+                        if page > 0 {
+                            desktop.image_page.set(page - 1);
+                            desktop.painted.borrow_mut().clear();
+                            layout(hwnd, desktop);
+                            invalidate_pictures(hwnd);
+                        }
+                    }
+                    IMG_NEXT => {
+                        let page = desktop.current_image_page();
+                        if page + 1 < desktop.image_page_count() {
+                            desktop.image_page.set(page + 1);
+                            desktop.painted.borrow_mut().clear();
+                            layout(hwnd, desktop);
+                            invalidate_pictures(hwnd);
+                        }
                     }
                     USE_DEFAULT => set_picture(hwnd, desktop, None),
                     UPLOAD_IMAGE => start_upload(hwnd, desktop),
@@ -3148,6 +3214,7 @@ unsafe fn show_target(hwnd: HWND, desktop: &Desktop, index: usize) {
             return;
         }
         desktop.target.set(index);
+        desktop.image_page.set(0);
         SendDlgItemMessageW(hwnd, IMAGE_TARGET, CB_SETCURSEL, index, 0);
         desktop.painted.borrow_mut().clear();
         layout(hwnd, desktop);
@@ -3178,8 +3245,12 @@ unsafe fn pick_image_file(hwnd: HWND) -> Option<PathBuf> {
         ofn.lpstrFilter = filter.as_ptr();
         ofn.lpstrFile = buffer.as_mut_ptr();
         ofn.nMaxFile = buffer.len() as u32;
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if GetOpenFileNameW(&mut ofn) == 0 {
+            let err = CommDlgExtendedError();
+            if err != 0 {
+                show_error(&format!("Could not open file picker (error {err:#x})."));
+            }
             return None;
         }
         let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());

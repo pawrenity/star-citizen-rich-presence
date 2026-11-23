@@ -5,8 +5,25 @@ use std::{collections::HashMap, sync::OnceLock};
 
 type Choices = HashMap<String, Vec<String>>;
 
+fn expand(entry: String) -> String {
+    if entry.starts_with("https://") {
+        return entry;
+    }
+    let name = entry.rsplit('/').next().unwrap_or(&entry);
+    if name.to_ascii_lowercase().ends_with(".webp") {
+        format!("https://media.starcitizen.tools/thumb/{entry}/480px-{name}")
+    } else {
+        format!("https://media.starcitizen.tools/thumb/{entry}/480px-{name}.webp")
+    }
+}
+
 fn load(cell: &'static OnceLock<Choices>, json: &str) -> &'static Choices {
-    cell.get_or_init(|| serde_json::from_str(json).expect("bundled artwork must be valid JSON"))
+    cell.get_or_init(|| {
+        let raw: Choices = serde_json::from_str(json).expect("bundled artwork must be valid JSON");
+        raw.into_iter()
+            .map(|(k, list)| (k, list.into_iter().map(expand).collect()))
+            .collect()
+    })
 }
 
 fn ships() -> &'static Choices {

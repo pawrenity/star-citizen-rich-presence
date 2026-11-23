@@ -276,3 +276,29 @@ pub fn upload_image(png_bytes: &[u8]) -> Result<String> {
     );
     Ok(url)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn live_catbox_upload() {
+        let mut img = image::RgbaImage::new(512, 512);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgba([
+                ((x * 37) ^ (y * 17)) as u8,
+                (x + y * 53) as u8,
+                (x * 13) as u8,
+                255,
+            ]);
+        }
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        let bytes = out.into_inner();
+        println!("uploading {} bytes", bytes.len());
+        let url = upload_image(&bytes).unwrap();
+        println!("uploaded to {url}");
+        assert!(url.starts_with("https://files.catbox.moe/"), "got {url}");
+    }
+}
