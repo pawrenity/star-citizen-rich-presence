@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCRP Artwork Picker</title>
+<style>
+:root { --bg:#f6f7f9; --fg:#14161a; --muted:#5d6470; --card:#fff; --border:#dde1e6; --accent:#2f6fde; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --fg:#e8eaee; --muted:#9aa1ad; --card:#181b21; --border:#2a2f38; --accent:#6ea0ff; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+header { position:sticky; top:0; z-index:2; background:var(--bg); border-bottom:1px solid var(--border); padding:16px; }
+.wrap { max-width:1200px; margin:0 auto; }
+h1 { font-size:20px; margin:0 0 4px; }
+p { margin:0 0 12px; color:var(--muted); }
+code { background:var(--card); border:1px solid var(--border); border-radius:4px; padding:0 4px; }
+.controls { display:flex; gap:8px; flex-wrap:wrap; }
+input { flex:1; min-width:200px; padding:9px 12px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--fg); font:inherit; }
+button.tab { padding:9px 14px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--fg); font:inherit; cursor:pointer; }
+button.tab[aria-pressed=true] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+main { padding:16px; }
+section { margin:0 0 24px; }
+h2 { font-size:16px; margin:0 0 8px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+.choice { position:relative; padding:0; border:2px solid transparent; border-radius:8px; overflow:hidden; background:var(--card); cursor:pointer; aspect-ratio:16/10; }
+.choice:hover, .choice:focus-visible { border-color:var(--accent); outline:none; }
+.choice img { width:100%; height:100%; object-fit:cover; display:block; }
+.choice span { position:absolute; left:6px; top:6px; background:rgba(0,0,0,.7); color:#fff; font-size:12px; font-weight:600; border-radius:4px; padding:1px 6px; }
+.toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:var(--fg); color:var(--bg); padding:10px 16px; border-radius:8px; font-family:ui-monospace,Consolas,monospace; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:calc(100% - 32px); }
+.toast.show { opacity:1; }
+.more { display:block; margin:8px auto; }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>Artwork picker</h1>
+  <p>Click an image to copy its line, then paste it under <code>[ship_images]</code> or <code>[mission_images]</code> in <code>scrp.toml</code>. Choice 1 is the default. Images: Star Citizen Wiki.</p>
+  <div class="controls">
+    <input id="q" type="search" placeholder="Search ships, e.g. Gladius" autocomplete="off">
+    <button class="tab" data-tab="ships" aria-pressed="true">Ships</button>
+    <button class="tab" data-tab="missions" aria-pressed="false">Missions</button>
+  </div>
+</div></header>
+<main class="wrap" id="list"></main>
+<div class="toast" id="toast" role="status"></div>
+<script>
+const DATA = /*ARTWORK_DATA*/null;
+const LABELS = { bounty:'Bounty hunting', mercenary:'Mercenary', hauling:'Cargo hauling', delivery:'Delivery', mining:'Mining', salvage:'Salvage', rescue:'Search and rescue', investigation:'Investigation', racing:'Racing', xenothreat:'XenoThreat', wikelo:'Wikelo', arena:'Arena Commander' };
+let tab = 'ships', limit = 40;
+const list = document.getElementById('list'), q = document.getElementById('q'), toast = document.getElementById('toast');
+function render() {
+  const term = q.value.trim().toLowerCase();
+  const entries = Object.entries(DATA[tab]).filter(([k]) => (k + ' ' + (LABELS[k] || '')).toLowerCase().includes(term));
+  list.replaceChildren();
+  for (const [key, urls] of entries.slice(0, limit)) {
+    const section = document.createElement('section');
+    const h = document.createElement('h2');
+    h.textContent = tab === 'missions' ? `${LABELS[key] || key} (${key})` : key;
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    urls.forEach((url, i) => {
+      const b = document.createElement('button');
+      b.className = 'choice';
+      b.title = `Choice ${i + 1}`;
+      const img = document.createElement('img');
+      img.loading = 'lazy'; img.src = url; img.alt = `${key} choice ${i + 1}`;
+      const n = document.createElement('span'); n.textContent = i + 1;
+      b.append(img, n);
+      b.onclick = () => copy(`${JSON.stringify(key)} = "${i + 1}"`);
+      grid.append(b);
+    });
+    section.append(h, grid);
+    list.append(section);
+  }
+  if (entries.length > limit) {
+    const more = document.createElement('button');
+    more.className = 'tab more';
+    more.textContent = `Show more (${entries.length - limit} left)`;
+    more.onclick = () => { limit += 40; render(); };
+    list.append(more);
+  }
+  if (!entries.length) list.textContent = 'Nothing matches.';
+}
+async function copy(line) {
+  try { await navigator.clipboard.writeText(line); toast.textContent = `Copied: ${line}`; }
+  catch { toast.textContent = line; }
+  toast.classList.add('show');
+  clearTimeout(copy.t); copy.t = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+document.querySelectorAll('.tab[data-tab]').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab; limit = 40;
+  document.querySelectorAll('.tab[data-tab]').forEach(o => o.setAttribute('aria-pressed', o === b));
+  q.placeholder = tab === 'ships' ? 'Search ships, e.g. Gladius' : 'Search mission types';
+  render();
+});
+let typing;
+q.oninput = () => { clearTimeout(typing); typing = setTimeout(() => { limit = 40; render(); }, 120); };
+render();
+</script>
+</body>
+</html>

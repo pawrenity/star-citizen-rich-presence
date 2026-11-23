@@ -85,3 +85,29 @@ fn executable_replay_prints_json_and_respects_privacy() {
     assert_eq!(result["presence"]["details"], "Everus Harbor");
     assert!(result["presence"]["profile_url"].is_null());
 }
+
+#[test]
+fn mission_title_markup_never_reaches_the_presence_card() {
+    let locations = Locations::load(None).unwrap();
+    let mut session = Session::new(0);
+    for line in [
+        "User Login Success - Handle[TestPilot]",
+        "<2026-11-23T20:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"You have joined channel 'Anvil Asgard : TestPilot'.",
+        "<2026-11-23T20:00:01.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Accepted: Tactical Strike Group Needed <EM4>[BP]</EM4> <EM4>[300 Rep]</EM4>: ",
+    ] {
+        session.apply(parser::parse(line).unwrap(), 1, &locations);
+    }
+    let card = presence::snapshot(&session, &Config::default(), 1).unwrap();
+    assert_eq!(
+        card.state,
+        "Anvil Asgard · Tactical Strike Group Needed [BP] [300 Rep]"
+    );
+    assert!(!card.state.contains('<') && !card.details.contains('<'));
+
+    session.apply(
+        parser::parse("<SHUDEvent_OnNotification> Added notification \"Contract Complete: Tactical Strike Group Needed <em4>[BP]</em4> <EM4>[300 Rep]</EM4>: ").unwrap(),
+        2,
+        &locations,
+    );
+    assert!(session.contracts.is_empty());
+}

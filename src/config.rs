@@ -71,6 +71,7 @@ pub struct Config {
     pub show_notifications: bool,
     pub show_location: bool,
     pub show_ship: bool,
+    pub show_party: bool,
     pub show_artwork: bool,
     pub custom_state: String,
     pub custom_details: String,
@@ -78,6 +79,14 @@ pub struct Config {
     pub locations_file: Option<PathBuf>,
     /// Asset keys must exist in YOUR Discord application. Unlisted locations use logo.
     pub image_assets: std::collections::BTreeMap<String, String>,
+    /// Ship name -> wiki choice number, HTTPS image URL, or Discord asset key.
+    pub ship_images: std::collections::BTreeMap<String, String>,
+    /// Mission type (e.g. `bounty`) or words from a contract title -> image, as above.
+    pub mission_images: std::collections::BTreeMap<String, String>,
+    /// Discord verb: playing, listening, watching, or competing.
+    pub activity_type: String,
+    /// What the member list shows after the verb: name (the Discord app name), details, or state.
+    pub status_display: String,
 }
 
 impl Default for Config {
@@ -95,11 +104,16 @@ impl Default for Config {
             show_notifications: true,
             show_location: true,
             show_ship: true,
+            show_party: true,
             show_artwork: true,
             custom_state: String::new(),
             custom_details: String::new(),
             locations_file: None,
             image_assets: Default::default(),
+            ship_images: Default::default(),
+            mission_images: Default::default(),
+            activity_type: "playing".into(),
+            status_display: "name".into(),
         }
     }
 }
@@ -146,6 +160,8 @@ impl Config {
             config.discord_app_id = app.clone();
         }
         config.channel = config.channel.to_uppercase();
+        config.activity_type = config.activity_type.trim().to_ascii_lowercase();
+        config.status_display = config.status_display.trim().to_ascii_lowercase();
         config.show_profile &= !args.no_profile;
         config.show_contracts &= !args.no_contracts;
         config.show_notifications &= !args.no_notifications;
@@ -192,6 +208,27 @@ impl Config {
             ),
             "Channel must be LIVE, PTU, EPTU, or TECH-PREVIEW"
         );
+        ensure!(
+            matches!(
+                self.activity_type.as_str(),
+                "playing" | "listening" | "watching" | "competing"
+            ),
+            "activity_type must be playing, listening, watching, or competing"
+        );
+        ensure!(
+            matches!(self.status_display.as_str(), "name" | "details" | "state"),
+            "status_display must be name, details, or state"
+        );
+        for (key, value) in self.ship_images.iter().chain(&self.mission_images) {
+            ensure!(
+                value.len() <= 256 && !value.chars().any(char::is_control),
+                "Image for {key:?} must be a choice number, HTTPS URL, or asset key of up to 256 bytes"
+            );
+            ensure!(
+                !value.contains("://") || value.starts_with("https://"),
+                "Image URL for {key:?} must use HTTPS"
+            );
+        }
         ensure!(
             (1..=60).contains(&self.poll_seconds),
             "poll_seconds must be between 1 and 60"

@@ -26,6 +26,8 @@ pub struct Session {
     pub incapacitated_at: Option<i64>,
     pub notice: Option<(String, String, i64)>,
     pub last_atc: Option<i64>,
+    /// Other party members seen joining; `Some` while the player is in a party.
+    pub party: Option<BTreeSet<String>>,
     target: Option<(String, String, i64)>,
     loading_screen_open: bool,
     inventory_zone: Option<(u64, i64)>,
@@ -45,6 +47,7 @@ impl Session {
             incapacitated_at: None,
             notice: None,
             last_atc: None,
+            party: None,
             target: None,
             loading_screen_open: false,
             inventory_zone: None,
@@ -80,6 +83,7 @@ impl Session {
             Event::Login(handle) => {
                 if self.handle.as_ref().is_some_and(|old| old != &handle) {
                     self.clear_gameplay();
+                    self.party = None;
                 }
                 self.handle = Some(handle);
             }
@@ -115,6 +119,8 @@ impl Session {
             }
             Event::Shutdown => {
                 self.clear_gameplay();
+                // Parties survive server hops and the menu, but not quitting the game.
+                self.party = None;
                 self.loading_screen_open = false;
                 self.phase = Phase::Stopped;
             }
@@ -275,6 +281,23 @@ impl Session {
                 self.last_atc = None;
                 self.inventory_zone = None;
             }
+            Event::PartyJoined(name) | Event::PartyActive(Some(name)) => {
+                let party = self.party.get_or_insert_default();
+                if self.handle.as_ref() != Some(&name) && party.len() < 64 {
+                    party.insert(name);
+                }
+            }
+            Event::PartyActive(None) => {
+                self.party.get_or_insert_default();
+            }
+            Event::PartyLeft(name) => {
+                if self.handle.as_ref() == Some(&name) {
+                    self.party = None;
+                } else if let Some(party) = &mut self.party {
+                    party.remove(&name);
+                }
+            }
+            Event::PartyEnded => self.party = None,
             Event::Notice { details, state } => {
                 if self.phase == Phase::Playing {
                     self.notice = Some((details, state, at));

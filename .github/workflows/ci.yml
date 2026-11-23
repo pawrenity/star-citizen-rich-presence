@@ -27,6 +27,7 @@ jobs:
             target/release/star-citizen-rich-presence.exe
             scrp.example.toml
             README.md
+            assets/artwork-gallery.html
             VALIDATION.md
             RELEASE_NOTES.md
             data/content-source.json

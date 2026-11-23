@@ -12,6 +12,13 @@ pub struct Snapshot {
     pub state: String,
     pub large_image: String,
     pub large_text: String,
+    /// Empty means the default badge (the logo, when the large image is artwork).
+    pub small_image: String,
+    pub small_text: String,
+    /// Discord activity type: 0 playing, 2 listening, 3 watching, 5 competing.
+    pub activity_type: u8,
+    /// Discord status_display_type: 0 app name, 1 state, 2 details.
+    pub status_display: u8,
     pub profile_url: Option<String>,
     pub buttons: Vec<crate::config::CardButton>,
     pub started: i64,
@@ -30,6 +37,19 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         state: String::new(),
         large_image: "logo".into(),
         large_text: "Star Citizen".into(),
+        small_image: String::new(),
+        small_text: String::new(),
+        activity_type: match config.activity_type.as_str() {
+            "listening" => 2,
+            "watching" => 3,
+            "competing" => 5,
+            _ => 0,
+        },
+        status_display: match config.status_display.as_str() {
+            "state" => 1,
+            "details" => 2,
+            _ => 0,
+        },
         profile_url: None,
         buttons: config.buttons.clone(),
         started: session.started,
@@ -104,6 +124,12 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
             format!("{ship} · {state}")
         };
     }
+    if session.phase == Phase::Playing && config.show_party && session.party.is_some() {
+        state = format!("{state} · In a party");
+    }
+    if session.phase == Phase::Playing && config.show_artwork {
+        apply_artwork(&mut snapshot, session, config);
+    }
     if config.show_profile
         && let Some(handle) = &session.handle
         && !handle.is_empty()
@@ -120,15 +146,99 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         if session.phase == Phase::Playing && !config.custom_details.trim().is_empty() {
             limit(config.custom_details.trim(), 128)
         } else {
-            limit(&snapshot.details, 128)
+            // Defense in depth: log-derived text must never leak UI markup.
+            limit(&crate::parser::strip_markup(&snapshot.details), 128)
         };
     snapshot.state = if session.phase == Phase::Playing && !config.custom_state.trim().is_empty() {
         limit(config.custom_state.trim(), 128)
     } else {
-        limit(&state, 128)
+        limit(&crate::parser::strip_markup(&state), 128)
     };
-    snapshot.large_text = limit(&snapshot.large_text, 128);
+    snapshot.large_text = limit(&crate::parser::strip_markup(&snapshot.large_text), 128);
+    snapshot.small_text = limit(&crate::parser::strip_markup(&snapshot.small_text), 128);
     Some(snapshot)
+}
+
+/// Ship art takes the large slot (pushing location art to the badge); a recognised
+/// contract type takes the badge. User overrides win over bundled wiki artwork.
+fn apply_artwork(snapshot: &mut Snapshot, session: &Session, config: &Config) {
+    let mut badge = None;
+    if config.show_ship
+        && let Some(ship) = &session.ship
+        && let Some(url) = ship_image(ship, config)
+    {
+        if snapshot.large_image != "logo" {
+            badge = Some((
+                std::mem::take(&mut snapshot.large_image),
+                std::mem::take(&mut snapshot.large_text),
+            ));
+        }
+        snapshot.large_image = url;
+        snapshot.large_text = ship.clone();
+    }
+    if config.show_contracts {
+        // Several contracts only get an icon when they all resolve to the same one.
+        let mut kinds = session
+            .contracts
+            .iter()
+            .map(|title| mission_image(title, config));
+        if let Some(Some(first)) = kinds.next()
+            && kinds.all(|kind| kind.as_ref() == Some(&first))
+        {
+            badge = Some(first);
+        }
+    }
+    if let Some((image, text)) = badge {
+        snapshot.small_image = image;
+        snapshot.small_text = text;
+    }
+}
+
+fn find_ci<'a>(
+    map: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> Option<&'a String> {
+    map.get(key).or_else(|| {
+        map.iter()
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .map(|(_, v)| v)
+    })
+}
+
+fn ship_image(ship: &str, config: &Config) -> Option<String> {
+    let choices = crate::artwork::ship_choices(ship);
+    match find_ci(&config.ship_images, ship).or_else(|| config.image_assets.get(ship)) {
+        Some(value) => crate::artwork::resolve(value, choices),
+        None => choices.first().cloned(),
+    }
+}
+
+/// Override keys may be words from the contract title (most specific) or a mission
+/// type key/label such as `bounty` or `Bounty hunting`.
+fn mission_image(title: &str, config: &Config) -> Option<(String, String)> {
+    let category = crate::artwork::mission_category(title);
+    let choices = category.map_or(&[][..], |(key, _)| crate::artwork::mission_choices(key));
+    let label = category.map_or("Contract", |(_, label)| label).to_string();
+    if config.mission_images.is_empty() {
+        return Some((choices.first()?.clone(), label));
+    }
+    let lower = title.to_ascii_lowercase();
+    let by_title = config
+        .mission_images
+        .iter()
+        .filter(|(key, _)| {
+            let key = key.trim().to_ascii_lowercase();
+            !key.is_empty() && lower.contains(&key)
+        })
+        .max_by_key(|(key, _)| key.trim().len())
+        .map(|(_, value)| value);
+    let by_type = category.and_then(|(key, label)| {
+        find_ci(&config.mission_images, key).or_else(|| find_ci(&config.mission_images, label))
+    });
+    match by_title.or(by_type) {
+        Some(value) => crate::artwork::resolve(value, choices).map(|url| (url, label)),
+        None => Some((choices.first()?.clone(), label)),
+    }
 }
 
 fn location_art<'a>(location: &crate::locations::Location, config: &'a Config) -> &'a str {
@@ -302,6 +412,147 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(snapshot(&s, &hidden, 5).unwrap().details, "Lorville");
+    }
+    #[test]
+    fn ship_art_leads_and_location_or_mission_art_takes_the_badge() {
+        let locations = Locations::load(None).unwrap();
+        let mut s = Session::new(1);
+        s.apply(Event::Login("Pilot".into()), 2, &locations);
+        s.apply(
+            Event::Inventory {
+                player: "Pilot".into(),
+                location: "Stanton1_Lorville".into(),
+            },
+            3,
+            &locations,
+        );
+        let on_foot = snapshot(&s, &Config::default(), 4).unwrap();
+        assert!(on_foot.large_image.starts_with("https://"));
+        assert!(on_foot.small_image.is_empty());
+
+        s.apply(Event::Board("Aegis Gladius".into()), 4, &locations);
+        let flying = snapshot(&s, &Config::default(), 5).unwrap();
+        assert_eq!(
+            flying.large_image,
+            crate::artwork::ship("Aegis Gladius").unwrap()
+        );
+        assert_eq!(flying.large_text, "Aegis Gladius");
+        assert_eq!(flying.small_image, on_foot.large_image);
+        assert_eq!(flying.small_text, "Lorville");
+
+        s.apply(
+            Event::ContractAccepted("VHRT Bounty: Kill Target".into()),
+            5,
+            &locations,
+        );
+        let hunting = snapshot(&s, &Config::default(), 6).unwrap();
+        assert_eq!(hunting.small_text, "Bounty hunting");
+        assert!(hunting.small_image.contains("BHG_logo"));
+
+        // Mixed contract types fall back to the location badge.
+        s.apply(Event::ContractAccepted("Haul Cargo".into()), 6, &locations);
+        assert_eq!(
+            snapshot(&s, &Config::default(), 7).unwrap().small_text,
+            "Lorville"
+        );
+
+        let custom = Config {
+            image_assets: [("Aegis Gladius".to_string(), "my_gladius".to_string())].into(),
+            ..Config::default()
+        };
+        assert_eq!(snapshot(&s, &custom, 7).unwrap().large_image, "my_gladius");
+        let picked = Config {
+            ship_images: [("aegis gladius".to_string(), "2".to_string())].into(),
+            mission_images: [
+                (
+                    "bounty".to_string(),
+                    "https://example.com/bounty.png".to_string(),
+                ),
+                (
+                    "haul cargo".to_string(),
+                    "https://example.com/haul.png".to_string(),
+                ),
+            ]
+            .into(),
+            activity_type: "listening".into(),
+            status_display: "details".into(),
+            ..Config::default()
+        };
+        let card = snapshot(&s, &picked, 7).unwrap();
+        assert_eq!(
+            Some(&card.large_image),
+            crate::artwork::ship_choices("Aegis Gladius").get(1)
+        );
+        // The two contracts now resolve to different custom icons, so the location stays.
+        assert_eq!(card.small_text, "Lorville");
+        assert_eq!((card.activity_type, card.status_display), (2, 2));
+        s.apply(Event::ContractEnded("Haul Cargo".into()), 7, &locations);
+        let card = snapshot(&s, &picked, 8).unwrap();
+        assert_eq!(card.small_image, "https://example.com/bounty.png");
+        assert_eq!(card.small_text, "Bounty hunting");
+        let plain = Config {
+            show_artwork: false,
+            ..Config::default()
+        };
+        let plain = snapshot(&s, &plain, 7).unwrap();
+        assert_eq!(
+            (plain.large_image.as_str(), plain.small_image.as_str()),
+            ("logo", "")
+        );
+    }
+    #[test]
+    fn party_membership_shows_until_the_party_ends() {
+        let locations = Locations::load(None).unwrap();
+        let mut s = Session::new(1);
+        s.apply(Event::Login("Pilot".into()), 2, &locations);
+        s.apply(Event::Board("Aegis Gladius".into()), 3, &locations);
+        assert_eq!(
+            snapshot(&s, &Config::default(), 4).unwrap().state,
+            "Aegis Gladius"
+        );
+        s.apply(Event::PartyJoined("Wingman".into()), 4, &locations);
+        assert_eq!(
+            snapshot(&s, &Config::default(), 5).unwrap().state,
+            "Aegis Gladius · In a party"
+        );
+        let hidden = Config {
+            show_party: false,
+            ..Config::default()
+        };
+        assert_eq!(snapshot(&s, &hidden, 5).unwrap().state, "Aegis Gladius");
+        // Another member leaving keeps the party; the player leaving ends it.
+        s.apply(Event::PartyLeft("Wingman".into()), 5, &locations);
+        assert!(s.party.is_some());
+        s.apply(Event::PartyLeft("Pilot".into()), 6, &locations);
+        assert!(s.party.is_none());
+        s.apply(Event::PartyActive(Some("Lead".into())), 7, &locations);
+        s.apply(Event::PartyEnded, 8, &locations);
+        assert_eq!(
+            snapshot(&s, &Config::default(), 9).unwrap().state,
+            "Aegis Gladius"
+        );
+    }
+    #[test]
+    fn markup_in_session_text_is_stripped_from_the_card() {
+        let locations = Locations::load(None).unwrap();
+        let mut s = Session::new(1);
+        // Events built directly (bypassing the parser) are still cleaned at render time.
+        s.apply(
+            Event::ContractAccepted("Bounty <EM4>[BP]</EM4> <b>Hunt</b>".into()),
+            2,
+            &locations,
+        );
+        s.apply(
+            Event::Notice {
+                details: "<EM1>Blueprint</EM1> acquired".into(),
+                state: String::new(),
+            },
+            3,
+            &locations,
+        );
+        let card = snapshot(&s, &Config::default(), 4).unwrap();
+        assert_eq!(card.details, "Blueprint acquired");
+        assert_eq!(card.state, "Bounty [BP] Hunt");
     }
     use anyhow::anyhow;
     #[derive(Default)]

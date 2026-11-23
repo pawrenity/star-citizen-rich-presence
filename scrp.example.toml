@@ -9,6 +9,17 @@ location_ttl_seconds = 900 # expire the last reported location after 15 minutes
 show_profile = true
 show_contracts = true
 show_notifications = true # short-lived blueprint, refinery, and hangar notices
+show_ship = true
+show_party = true # adds "In a party" while you are in a party
+show_artwork = true # wiki artwork for locations, ships, and mission types
+
+# The verb in front of the game name: playing, listening, watching, or competing.
+# The game name itself is your Discord application's name: to show "Listening to
+# Scam Citizen", create an app with that name at https://discord.com/developers,
+# put its ID in discord_app_id, and set activity_type = "listening".
+activity_type = "playing"
+# What the member list shows after the verb: name (the app name), details, or state.
+status_display = "name"
 
 # Override automatic discovery for a custom installation.
 # Windows paths use single quotes in TOML so backslashes stay literal.
@@ -17,9 +28,6 @@ show_notifications = true # short-lived blueprint, refinery, and hangar notices
 # Add/override location aliases without rebuilding. See data/locations.json for the schema.
 # locations_file = 'my-locations.json'
 
-# Image keys must already exist in the selected Discord application's Rich Presence assets.
-# The default is the original application's "logo". New locations have text support
-# without depending on unavailable Pyro/Nyx artwork in that application.
 # Optional public Discord links. With one custom button, the RSI profile can
 # use the second slot. With two custom buttons, both slots go to your links.
 # [[buttons]]
@@ -30,7 +38,23 @@ show_notifications = true # short-lived blueprint, refinery, and hangar notices
 # label = "Our org"
 # url = "https://robertsspaceindustries.com/orgs/EXAMPLE"
 
+# Image values below can be a public HTTPS image URL or an asset key from your own
+# Discord application. Discord cannot show local files.
+# Location artwork, keyed by location name.
 [image_assets]
 # "Area18" = "area18"
 # "Hurston" = "hurston"
 # "Levski" = "levski"
+
+# Ship artwork. Open artwork-gallery.html to browse every wiki image and click
+# one to copy its line. A number picks that wiki choice (1 is the default).
+[ship_images]
+# "Aegis Gladius" = "3"
+# "RSI Perseus" = "https://example.com/my-perseus.png"
+
+# Mission icons, keyed by type (bounty, mercenary, hauling, delivery, mining, salvage,
+# rescue, investigation, racing, xenothreat, wikelo, arena) or by any words from a
+# contract title. The longest matching title words win over the type.
+[mission_images]
+# bounty = "1"
+# "Tactical Strike" = "https://example.com/strike.png"

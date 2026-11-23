@@ -119,11 +119,17 @@ impl Transport for DiscordTransport {
 
 fn activity_payload(s: &Snapshot) -> Value {
     let mut assets = json!({"large_image":s.large_image,"large_text":s.large_text});
-    if s.large_image != "logo" {
+    if !s.small_image.is_empty() {
+        assets["small_image"] = json!(s.small_image);
+        assets["small_text"] = json!(s.small_text);
+    } else if s.large_image != "logo" {
         assets["small_image"] = json!("logo");
         assets["small_text"] = json!("Star Citizen");
     }
-    let mut payload = json!({"type":0,"details":s.details,"state":s.state,"assets":assets,"timestamps":{"start":s.started}});
+    let mut payload = json!({"type":s.activity_type,"details":s.details,"state":s.state,"assets":assets,"timestamps":{"start":s.started}});
+    if s.status_display != 0 {
+        payload["status_display_type"] = json!(s.status_display);
+    }
     let mut buttons = s.buttons.clone();
     if buttons.len() < 2
         && let Some(url) = &s.profile_url
@@ -338,6 +344,10 @@ mod tests {
             state: "LIVE".into(),
             large_image: "logo".into(),
             large_text: "Star Citizen".into(),
+            small_image: String::new(),
+            small_text: String::new(),
+            activity_type: 0,
+            status_display: 0,
             profile_url: None,
             buttons: Vec::new(),
             started: 123,
@@ -399,6 +409,10 @@ mod tests {
             state: "LIVE".into(),
             large_image: "logo".into(),
             large_text: "Star Citizen".into(),
+            small_image: String::new(),
+            small_text: String::new(),
+            activity_type: 0,
+            status_display: 0,
             profile_url: None,
             buttons: Vec::new(),
             started: 123,
