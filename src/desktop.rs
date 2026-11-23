@@ -67,9 +67,9 @@ const RELEASE_NOTES: i32 = 141;
 const UPDATE_ACTION: i32 = 142;
 const UPDATE_NOTES: i32 = 143;
 const NAV: i32 = 300;
-/// Picture tiles on the Images page (up to 18: three rows of six).
+/// Picture tiles on the Images page (up to 27: three rows of nine 1:1 icon squares).
 const CHOICE: i32 = 400;
-const MAX_CHOICES: usize = 18;
+const MAX_CHOICES: usize = 27;
 const THEME_BTN: i32 = 500;
 const ACCENT_BTN: i32 = 510;
 const CORNER_BTN: i32 = 520;
@@ -936,15 +936,15 @@ fn activity_row(top: i32, index: i32) -> RECT {
     rect(LEFT, top + 26 + index * 50, RIGHT - LEFT, 44)
 }
 
-/// Picture tile `index` on the Images page: six 104×60 tiles per row.
+/// Picture tile `index` on the Images page: nine 66×66 1:1 square icon previews per row.
 fn choice_rect(top: i32, index: usize) -> RECT {
-    let (column, row) = ((index % 6) as i32, (index / 6) as i32);
-    rect(LEFT + column * 110, top + 66 + row * 66, 104, 60)
+    let (column, row) = ((index % 9) as i32, (index / 9) as i32);
+    rect(LEFT + column * 73, top + 64 + row * 72, 66, 66)
 }
 
 /// "Your own link" field below the picture grid.
 fn link_frame(top: i32) -> RECT {
-    rect(LEFT, top + 66 + 3 * 66 + 4, RIGHT - LEFT - 128, 30)
+    rect(LEFT, top + 280, RIGHT - LEFT - 128, 30)
 }
 
 fn buttons_box(top: i32) -> RECT {
@@ -2504,13 +2504,18 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             let (offset, _) = desktop.visible_choices();
             let index = offset + (id - CHOICE) as usize;
             let (w, h) = (r.right - r.left, r.bottom - r.top);
+            let mask = if desktop.current_target().mission {
+                Mask::Circle
+            } else {
+                Mask::Rounded(t.tile_radius.max(2) as u32)
+            };
             let picture = desktop.choices().get(index).and_then(|url| {
                 want_thumbnail(
                     desktop,
                     GetParent(item.hwndItem),
                     url,
                     (w as u32 - 4, h as u32 - 4),
-                    Mask::Rounded(4),
+                    mask,
                 )
             });
             let selected = desktop.selected_choice() == Some(index);
@@ -2680,7 +2685,7 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             );
             text(dc, &label, r, font, color, center);
         }
-        if item.itemState & ODS_FOCUS != 0 {
+        if item.itemState & ODS_FOCUS != 0 && !(CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id) {
             let mut focus = r;
             InflateRect(&mut focus, -3, -3);
             DrawFocusRect(dc, &focus);
