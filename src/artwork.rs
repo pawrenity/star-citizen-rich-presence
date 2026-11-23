@@ -16,17 +16,12 @@ fn ships() -> &'static Choices {
 
 /// Wiki artwork choices for a ship, keyed by its catalogue display name.
 pub fn ship_choices(name: &str) -> &'static [String] {
-    ships()
-        .get(name)
-        .map_or(&[], Vec::as_slice)
+    ships().get(name).map_or(&[], Vec::as_slice)
 }
 
 /// Every ship with bundled artwork, alphabetically.
 pub fn ship_names() -> Vec<&'static str> {
-    let mut names: Vec<_> = ships()
-        .keys()
-        .map(String::as_str)
-        .collect();
+    let mut names: Vec<_> = ships().keys().map(String::as_str).collect();
     names.sort_unstable();
     names
 }

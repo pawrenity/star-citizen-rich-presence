@@ -67,31 +67,29 @@ const NAV: i32 = 300;
 /// Picture tiles on the Images page (up to 18: three rows of six).
 const CHOICE: i32 = 400;
 const MAX_CHOICES: usize = 18;
+const THEME_BTN: i32 = 500;
+const ACCENT_BTN: i32 = 510;
+const CORNER_BTN: i32 = 520;
 
-const PAGES: [&str; 5] = ["Card", "Activity", "Images", "Buttons", "Updates"];
+const PAGES: [&str; 6] = [
+    "Card",
+    "Activity",
+    "Images",
+    "Buttons",
+    "Appearance",
+    "Updates",
+];
 const CARD: usize = 0;
 const ACTIVITY: usize = 1;
 const IMAGES: usize = 2;
 const BUTTONS: usize = 3;
-const UPDATES_PAGE: usize = 4;
+const APPEARANCE: usize = 4;
+const UPDATES_PAGE: usize = 5;
 
-// ── Palette (Windows 11 dark, one sky-blue accent) ──────────────────────────
+// ── Palette & Themes ────────────────────────────────────────────────────────
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
-const CAPTION: u32 = rgb(0x19, 0x19, 0x19);
-const CANVAS: u32 = rgb(0x20, 0x20, 0x20);
-const RAIL: u32 = rgb(0x1b, 0x1b, 0x1b);
-const RAIL_LINE: u32 = rgb(0x2d, 0x2d, 0x2d);
-const DIVIDER: u32 = rgb(0x2a, 0x2a, 0x2a);
-const NAV_SELECTED: u32 = rgb(0x2b, 0x2b, 0x2b);
-const TILE: u32 = rgb(0x27, 0x27, 0x27);
-const TILE_BORDER: u32 = rgb(0x33, 0x33, 0x33);
-const CARD_BORDER: u32 = rgb(0x36, 0x36, 0x36);
-const FIELD: u32 = rgb(0x1c, 0x1c, 0x1c);
-const FIELD_BORDER: u32 = rgb(0x3d, 0x3d, 0x3d);
-const FIELD_BOTTOM: u32 = rgb(0x59, 0x59, 0x59);
-const FOOTER: u32 = rgb(0x1c, 0x1c, 0x1c);
 const TEXT: u32 = rgb(0xf3, 0xf3, 0xf3);
 const HEADING: u32 = rgb(0xe6, 0xe6, 0xe6);
 const SOFT: u32 = rgb(0xc8, 0xc8, 0xc8);
@@ -99,13 +97,188 @@ const STATE_TEXT: u32 = rgb(0xb4, 0xb4, 0xb4);
 const OFF_TEXT: u32 = rgb(0xa4, 0xa4, 0xa4);
 const MUTED: u32 = rgb(0x96, 0x96, 0x96);
 const FAINT: u32 = rgb(0x7c, 0x7c, 0x7c);
-const ACCENT: u32 = rgb(0x60, 0xcd, 0xff);
-const ACCENT_PRESSED: u32 = rgb(0x4c, 0xb0, 0xe0);
 const ON_ACCENT: u32 = rgb(0x11, 0x11, 0x11);
 const GREEN: u32 = rgb(0x6c, 0xcb, 0x5f);
-const BANNER: u32 = rgb(0x1d, 0x2a, 0x36);
-const BANNER_BORDER: u32 = rgb(0x2d, 0x48, 0x60);
 const BANNER_TEXT: u32 = rgb(0xe8, 0xf3, 0xfb);
+
+#[derive(Clone, Copy)]
+struct Theme {
+    caption: u32,
+    canvas: u32,
+    rail: u32,
+    rail_line: u32,
+    divider: u32,
+    nav_selected: u32,
+    tile: u32,
+    tile_border: u32,
+    card_border: u32,
+    field: u32,
+    field_border: u32,
+    field_bottom: u32,
+    footer: u32,
+    accent: u32,
+    accent_pressed: u32,
+    banner: u32,
+    banner_border: u32,
+    tile_radius: i32,
+    button_radius: i32,
+}
+
+const THEMES: [(&str, &str, u32, u32, u32); 4] = [
+    (
+        "obsidian",
+        "Obsidian",
+        rgb(0x20, 0x20, 0x20),
+        rgb(0x1b, 0x1b, 0x1b),
+        rgb(0x27, 0x27, 0x27),
+    ),
+    (
+        "midnight",
+        "Midnight",
+        rgb(0x14, 0x19, 0x23),
+        rgb(0x0f, 0x14, 0x1d),
+        rgb(0x1c, 0x23, 0x31),
+    ),
+    (
+        "pitch",
+        "Pitch",
+        rgb(0x0c, 0x0c, 0x0e),
+        rgb(0x07, 0x07, 0x09),
+        rgb(0x15, 0x15, 0x19),
+    ),
+    (
+        "slate",
+        "Slate",
+        rgb(0x25, 0x26, 0x2b),
+        rgb(0x1e, 0x1f, 0x24),
+        rgb(0x2e, 0x30, 0x37),
+    ),
+];
+
+const ACCENTS: [(&str, &str, u32, u32); 6] = [
+    ("sky", "Sky", rgb(0x60, 0xcd, 0xff), rgb(0x4c, 0xb0, 0xe0)),
+    (
+        "amber",
+        "Amber",
+        rgb(0xf5, 0xb8, 0x41),
+        rgb(0xd4, 0x9b, 0x2b),
+    ),
+    (
+        "emerald",
+        "Emerald",
+        rgb(0x5c, 0xe0, 0x8a),
+        rgb(0x42, 0xbe, 0x6e),
+    ),
+    (
+        "coral",
+        "Coral",
+        rgb(0xff, 0x6b, 0x6b),
+        rgb(0xde, 0x52, 0x52),
+    ),
+    (
+        "violet",
+        "Violet",
+        rgb(0xb5, 0x89, 0xff),
+        rgb(0x97, 0x6c, 0xe0),
+    ),
+    ("ice", "Ice", rgb(0xd8, 0xe4, 0xf0), rgb(0xb4, 0xc4, 0xd4)),
+];
+
+impl Theme {
+    fn from_prefs(prefs: &Preferences) -> Self {
+        let (accent, accent_pressed) = ACCENTS
+            .iter()
+            .find(|(k, ..)| *k == prefs.accent)
+            .map_or((ACCENTS[0].2, ACCENTS[0].3), |(_, _, a, p)| (*a, *p));
+        let (tile_radius, button_radius) = if prefs.sharp_corners { (2, 2) } else { (6, 5) };
+        match prefs.theme.as_str() {
+            "midnight" => Self {
+                caption: rgb(0x0d, 0x12, 0x1a),
+                canvas: rgb(0x14, 0x19, 0x23),
+                rail: rgb(0x0f, 0x14, 0x1d),
+                rail_line: rgb(0x22, 0x2c, 0x3d),
+                divider: rgb(0x1f, 0x28, 0x38),
+                nav_selected: rgb(0x21, 0x2a, 0x3b),
+                tile: rgb(0x1c, 0x23, 0x31),
+                tile_border: rgb(0x2a, 0x35, 0x48),
+                card_border: rgb(0x2d, 0x39, 0x4e),
+                field: rgb(0x11, 0x16, 0x20),
+                field_border: rgb(0x31, 0x3e, 0x54),
+                field_bottom: rgb(0x4a, 0x5d, 0x7a),
+                footer: rgb(0x10, 0x15, 0x1e),
+                accent,
+                accent_pressed,
+                banner: rgb(0x17, 0x25, 0x38),
+                banner_border: rgb(0x29, 0x44, 0x64),
+                tile_radius,
+                button_radius,
+            },
+            "pitch" => Self {
+                caption: rgb(0x06, 0x06, 0x08),
+                canvas: rgb(0x0c, 0x0c, 0x0e),
+                rail: rgb(0x07, 0x07, 0x09),
+                rail_line: rgb(0x1e, 0x1e, 0x24),
+                divider: rgb(0x1b, 0x1b, 0x20),
+                nav_selected: rgb(0x1c, 0x1c, 0x22),
+                tile: rgb(0x15, 0x15, 0x19),
+                tile_border: rgb(0x25, 0x25, 0x2c),
+                card_border: rgb(0x28, 0x28, 0x30),
+                field: rgb(0x09, 0x09, 0x0c),
+                field_border: rgb(0x2c, 0x2c, 0x35),
+                field_bottom: rgb(0x46, 0x46, 0x54),
+                footer: rgb(0x08, 0x08, 0x0a),
+                accent,
+                accent_pressed,
+                banner: rgb(0x13, 0x1b, 0x24),
+                banner_border: rgb(0x24, 0x38, 0x4c),
+                tile_radius,
+                button_radius,
+            },
+            "slate" => Self {
+                caption: rgb(0x1c, 0x1d, 0x22),
+                canvas: rgb(0x25, 0x26, 0x2b),
+                rail: rgb(0x1e, 0x1f, 0x24),
+                rail_line: rgb(0x34, 0x36, 0x3e),
+                divider: rgb(0x30, 0x32, 0x3a),
+                nav_selected: rgb(0x33, 0x35, 0x3e),
+                tile: rgb(0x2e, 0x30, 0x37),
+                tile_border: rgb(0x3d, 0x40, 0x49),
+                card_border: rgb(0x41, 0x44, 0x4e),
+                field: rgb(0x1f, 0x20, 0x25),
+                field_border: rgb(0x46, 0x49, 0x54),
+                field_bottom: rgb(0x63, 0x67, 0x75),
+                footer: rgb(0x20, 0x21, 0x26),
+                accent,
+                accent_pressed,
+                banner: rgb(0x24, 0x31, 0x40),
+                banner_border: rgb(0x37, 0x52, 0x6e),
+                tile_radius,
+                button_radius,
+            },
+            _ => Self {
+                caption: rgb(0x19, 0x19, 0x19),
+                canvas: rgb(0x20, 0x20, 0x20),
+                rail: rgb(0x1b, 0x1b, 0x1b),
+                rail_line: rgb(0x2d, 0x2d, 0x2d),
+                divider: rgb(0x2a, 0x2a, 0x2a),
+                nav_selected: rgb(0x2b, 0x2b, 0x2b),
+                tile: rgb(0x27, 0x27, 0x27),
+                tile_border: rgb(0x33, 0x33, 0x33),
+                card_border: rgb(0x36, 0x36, 0x36),
+                field: rgb(0x1c, 0x1c, 0x1c),
+                field_border: rgb(0x3d, 0x3d, 0x3d),
+                field_bottom: rgb(0x59, 0x59, 0x59),
+                footer: rgb(0x1c, 0x1c, 0x1c),
+                accent,
+                accent_pressed,
+                banner: rgb(0x1d, 0x2a, 0x36),
+                banner_border: rgb(0x2d, 0x48, 0x60),
+                tile_radius,
+                button_radius,
+            },
+        }
+    }
+}
 
 // ── Geometry (client area 900 × 588) ───────────────────────────────────────
 const CLIENT_WIDTH: i32 = 900;
@@ -127,9 +300,9 @@ const VERBS: [(&str, &str); 4] = [
     ("competing", "Competing in"),
 ];
 const MEMBER_LIST_OPTIONS: [(&str, &str); 3] = [
-    ("name", "Game name"),
-    ("details", "Line 2"),
-    ("state", "Line 3"),
+    ("name", "Game name (Star Citizen)"),
+    ("details", "Line 2 — Location / custom"),
+    ("state", "Line 3 — Ship & contract"),
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -153,6 +326,10 @@ struct Preferences {
     /// Added on top of scrp.toml's tables; these win on the same key.
     ship_images: BTreeMap<String, String>,
     mission_images: BTreeMap<String, String>,
+    /// UI appearance customisation.
+    theme: String,
+    accent: String,
+    sharp_corners: bool,
 }
 
 impl Default for Preferences {
@@ -180,6 +357,9 @@ impl Preferences {
             status_display: None,
             ship_images: BTreeMap::new(),
             mission_images: BTreeMap::new(),
+            theme: "obsidian".into(),
+            accent: "sky".into(),
+            sharp_corners: false,
         }
     }
 
@@ -270,7 +450,8 @@ struct Desktop {
     /// What the window last painted, to skip needless repaints.
     painted: std::cell::RefCell<String>,
     fonts: std::cell::OnceCell<Fonts>,
-    field: HBRUSH,
+    theme: Cell<Theme>,
+    field: Cell<HBRUSH>,
     /// Everything that can have a custom picture: contract types, then ships.
     targets: Vec<Target>,
     /// Index into `targets` shown on the Images page.
@@ -303,7 +484,6 @@ fn find_ci<'a>(map: &'a BTreeMap<String, String>, key: &str) -> Option<&'a Strin
         .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
         .map(|(_, v)| v)
 }
-
 
 impl Desktop {
     fn current_target(&self) -> &Target {
@@ -518,6 +698,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             RegisterClassW(&wc) != 0,
             "Cannot register the desktop window"
         );
+        let initial_theme = Theme::from_prefs(&initial);
         let prefs = Arc::new(Mutex::new(initial));
         let status = Arc::new(Mutex::new(String::from("Waiting for Star Citizen…")));
         let preview = Arc::new(Mutex::new(None));
@@ -539,7 +720,8 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             banner: Cell::new(false),
             painted: Default::default(),
             fonts: Default::default(),
-            field: CreateSolidBrush(FIELD),
+            theme: Cell::new(initial_theme),
+            field: Cell::new(CreateSolidBrush(initial_theme.field)),
             targets: targets(),
             target: Cell::new(0),
         });
@@ -584,9 +766,10 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             (&dark_title as *const u32).cast(),
             size_of::<u32>() as u32,
         );
+        let t = desktop.theme.get();
         for (attribute, color) in [
-            (DWMWA_CAPTION_COLOR, CAPTION),
-            (DWMWA_BORDER_COLOR, rgb(0x3b, 0x3b, 0x3b)),
+            (DWMWA_CAPTION_COLOR, t.caption),
+            (DWMWA_BORDER_COLOR, t.card_border),
             (DWMWA_TEXT_COLOR, rgb(0xcf, 0xcf, 0xcf)),
         ] {
             DwmSetWindowAttribute(
@@ -836,7 +1019,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
                 hwnd,
                 id,
                 page == ACTIVITY,
-                rect(r.right - 14 - 240, r.top + 10, 240, 200),
+                rect(r.right - 14 - 260, r.top + 10, 260, 220),
             );
         }
         // Images page.
@@ -874,6 +1057,37 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             page == IMAGES,
             rect(RIGHT - 120, link.top, 120, 30),
         );
+        // Appearance page.
+        for index in 0..THEMES.len() {
+            let w = 156;
+            let gap = 11;
+            place(
+                hwnd,
+                THEME_BTN + index as i32,
+                page == APPEARANCE,
+                rect(LEFT + index as i32 * (w + gap), top + 46, w, 64),
+            );
+        }
+        for index in 0..ACCENTS.len() {
+            let w = 102;
+            let gap = 9;
+            place(
+                hwnd,
+                ACCENT_BTN + index as i32,
+                page == APPEARANCE,
+                rect(LEFT + index as i32 * (w + gap), top + 144, w, 38),
+            );
+        }
+        for index in 0..2 {
+            let w = 156;
+            let gap = 11;
+            place(
+                hwnd,
+                CORNER_BTN + index,
+                page == APPEARANCE,
+                rect(LEFT + index * (w + gap), top + 216, w, 36),
+            );
+        }
         // Updates page.
         let u = updates_row(top);
         place(
@@ -996,11 +1210,13 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
             let handle = control(
                 windows_sys::w!("COMBOBOX"),
                 "",
-                WS_TABSTOP | WS_VSCROLL | style,
+                WS_TABSTOP | WS_VSCROLL | style | CBS_OWNERDRAWFIXED as u32 | CBS_HASSTRINGS as u32,
                 id,
             );
             SetWindowTheme(handle, windows_sys::w!("DarkMode_CFD"), null_mut());
-            SendMessageW(handle, CB_SETITEMHEIGHT, usize::MAX, 22);
+            SendMessageW(handle, CB_SETITEMHEIGHT, usize::MAX, 24);
+            SendMessageW(handle, CB_SETITEMHEIGHT, 0, 28);
+            SetWindowSubclass(handle, Some(paint_combo), 2, body as usize);
             handle
         };
 
@@ -1031,10 +1247,20 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
 
         let target = combo(IMAGE_TARGET, CBS_DROPDOWNLIST as u32);
         for item in &desktop.targets {
-            SendMessageW(target, CB_ADDSTRING, 0, wide(&item.label).as_ptr() as LPARAM);
+            SendMessageW(
+                target,
+                CB_ADDSTRING,
+                0,
+                wide(&item.label).as_ptr() as LPARAM,
+            );
         }
         SendMessageW(target, CB_SETCURSEL, desktop.target.get(), 0);
-        edit(IMAGE_LINK, "", "Or paste your own image link (https://…)", 256);
+        edit(
+            IMAGE_LINK,
+            "",
+            "Or paste your own image link (https://…)",
+            256,
+        );
         button(USE_LINK, "Use link");
         button(UPLOAD_IMAGE, "Upload image");
         button(USE_DEFAULT, "Use default");
@@ -1048,6 +1274,15 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
             edit(name, button.map_or("", |b| &b.label), "Button label", 32);
             edit(url, button.map_or("", |b| &b.url), "https://…", 512);
         }
+
+        for (index, (_, label, ..)) in THEMES.iter().enumerate() {
+            button(THEME_BTN + index as i32, label);
+        }
+        for (index, (_, label, ..)) in ACCENTS.iter().enumerate() {
+            button(ACCENT_BTN + index as i32, label);
+        }
+        button(CORNER_BTN, "Rounded corners");
+        button(CORNER_BTN + 1, "Sharp corners");
 
         button(UPDATE_NOW, "Update now");
         button(RELEASE_NOTES, "Release notes");
@@ -1084,40 +1319,96 @@ unsafe fn fill(dc: HDC, r: RECT, color: u32) {
 }
 
 /// Rounded rectangle with an optional 1 px border (`radius` is the corner radius).
+fn color_channels(color: u32) -> (f32, f32, f32) {
+    (
+        (color & 0xff) as f32,
+        ((color >> 8) & 0xff) as f32,
+        ((color >> 16) & 0xff) as f32,
+    )
+}
+
+/// Anti-aliased rounded rectangle (with optional crisp 1 px inner border) via analytical SDF.
 unsafe fn shape(dc: HDC, r: RECT, radius: i32, color: u32, border: Option<u32>) {
     unsafe {
-        let brush = SelectObject(dc, GetStockObject(DC_BRUSH));
-        let pen = SelectObject(
-            dc,
-            GetStockObject(if border.is_some() { DC_PEN } else { NULL_PEN }),
-        );
-        SetDCBrushColor(dc, color);
-        if let Some(border) = border {
-            SetDCPenColor(dc, border);
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 {
+            return;
         }
-        let grow = if border.is_some() { 0 } else { 1 };
-        RoundRect(
-            dc,
-            r.left,
-            r.top,
-            r.right + grow,
-            r.bottom + grow,
-            radius * 2,
-            radius * 2,
-        );
-        SelectObject(dc, pen);
-        SelectObject(dc, brush);
+        if radius <= 0 && border.is_none() {
+            fill(dc, r, color);
+            return;
+        }
+        let (wf, hf) = (w as f32, h as f32);
+        let (hx, hy) = (wf * 0.5, hf * 0.5);
+        let rad = (radius.max(0) as f32).min(hx).min(hy);
+        let (fr, fg, fb) = color_channels(color);
+        let (br, bg, bb) = border.map_or((fr, fg, fb), color_channels);
+        let has_border = border.is_some();
+        let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
+        for y in 0..h {
+            let dy = (y as f32 + 0.5 - hy).abs() - (hy - rad);
+            let row = (y as usize) * (w as usize) * 4;
+            for x in 0..w {
+                let dx = (x as f32 + 0.5 - hx).abs() - (hx - rad);
+                let dist = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - rad;
+                let outer = (0.5 - dist).clamp(0.0, 1.0);
+                if outer <= 0.0 {
+                    continue;
+                }
+                let (fill_w, border_w) = if has_border {
+                    let inner = (-0.5 - dist).clamp(0.0, 1.0);
+                    (inner, (outer - inner).max(0.0))
+                } else {
+                    (outer, 0.0)
+                };
+                let idx = row + (x as usize) * 4;
+                bgra[idx] = (fb * fill_w + bb * border_w).round() as u8;
+                bgra[idx + 1] = (fg * fill_w + bg * border_w).round() as u8;
+                bgra[idx + 2] = (fr * fill_w + br * border_w).round() as u8;
+                bgra[idx + 3] = (outer * 255.0).round() as u8;
+            }
+        }
+        let thumb = Thumbnail {
+            width: w as u32,
+            height: h as u32,
+            bgra,
+        };
+        draw_thumbnail(dc, &thumb, r.left, r.top);
     }
 }
 
+/// Anti-aliased filled circle via analytical SDF.
 unsafe fn circle(dc: HDC, x: i32, y: i32, size: i32, color: u32) {
     unsafe {
-        let brush = SelectObject(dc, GetStockObject(DC_BRUSH));
-        let pen = SelectObject(dc, GetStockObject(NULL_PEN));
-        SetDCBrushColor(dc, color);
-        Ellipse(dc, x, y, x + size + 1, y + size + 1);
-        SelectObject(dc, pen);
-        SelectObject(dc, brush);
+        if size <= 0 {
+            return;
+        }
+        let (fr, fg, fb) = color_channels(color);
+        let radius = size as f32 * 0.5;
+        let mut bgra = vec![0u8; (size as usize) * (size as usize) * 4];
+        for py in 0..size {
+            let dy = py as f32 + 0.5 - radius;
+            let row = (py as usize) * (size as usize) * 4;
+            for px in 0..size {
+                let dx = px as f32 + 0.5 - radius;
+                let dist = dx.hypot(dy) - radius;
+                let cov = (0.5 - dist).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+                let idx = row + (px as usize) * 4;
+                bgra[idx] = (fb * cov).round() as u8;
+                bgra[idx + 1] = (fg * cov).round() as u8;
+                bgra[idx + 2] = (fr * cov).round() as u8;
+                bgra[idx + 3] = (cov * 255.0).round() as u8;
+            }
+        }
+        let thumb = Thumbnail {
+            width: size as u32,
+            height: size as u32,
+            bgra,
+        };
+        draw_thumbnail(dc, &thumb, x, y);
     }
 }
 
@@ -1289,8 +1580,9 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
         let bitmap = CreateCompatibleBitmap(target, CLIENT_WIDTH, CLIENT_HEIGHT);
         let old = SelectObject(dc, bitmap);
         let f = desktop.fonts();
+        let t = desktop.theme.get();
 
-        fill(dc, full, CANVAS);
+        fill(dc, full, t.canvas);
         paint_rail(dc, desktop);
         let banner = desktop.banner.get();
         if banner {
@@ -1300,14 +1592,14 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
         let top = page_top(banner);
         paint_page(dc, desktop, top);
         for (_, frame) in fields(desktop.page.get(), top) {
-            shape(dc, frame, 5, FIELD, Some(FIELD_BORDER));
+            shape(dc, frame, t.button_radius, t.field, Some(t.field_border));
             line(
                 dc,
                 frame.left + 4,
                 frame.bottom - 1,
                 frame.right - 4,
                 frame.bottom,
-                FIELD_BOTTOM,
+                t.field_bottom,
             );
         }
         // Footer.
@@ -1319,7 +1611,7 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
                 CLIENT_WIDTH,
                 CLIENT_HEIGHT - FOOTER_TOP,
             ),
-            FOOTER,
+            t.footer,
         );
         line(
             dc,
@@ -1327,7 +1619,7 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
             FOOTER_TOP,
             CLIENT_WIDTH,
             FOOTER_TOP + 1,
-            RAIL_LINE,
+            t.rail_line,
         );
         let _ = f;
 
@@ -1342,14 +1634,22 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
 unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
     unsafe {
         let f = desktop.fonts();
-        fill(dc, rect(0, 0, RAIL_WIDTH, CLIENT_HEIGHT), RAIL);
-        line(dc, RAIL_WIDTH, 0, RAIL_WIDTH + 1, CLIENT_HEIGHT, RAIL_LINE);
+        let t = desktop.theme.get();
+        fill(dc, rect(0, 0, RAIL_WIDTH, CLIENT_HEIGHT), t.rail);
+        line(
+            dc,
+            RAIL_WIDTH,
+            0,
+            RAIL_WIDTH + 1,
+            CLIENT_HEIGHT,
+            t.rail_line,
+        );
         shape(
             dc,
             rect(16, 14, 32, 32),
-            6,
-            rgb(0x25, 0x34, 0x42),
-            Some(rgb(0x35, 0x50, 0x69)),
+            t.tile_radius,
+            t.tile,
+            Some(t.tile_border),
         );
         DrawIconEx(dc, 22, 20, desktop.icon, 20, 20, 0, null_mut(), DI_NORMAL);
         text(
@@ -1368,7 +1668,7 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
             rgb(0x9b, 0x9b, 0x9b),
             LEFT_LINE,
         );
-        line(dc, 16, 60, 190, 61, DIVIDER);
+        line(dc, 16, 60, 190, 61, t.divider);
         text(
             dc,
             "SETTINGS",
@@ -1378,7 +1678,7 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
             LEFT_LINE,
         );
 
-        line(dc, 16, 546, 190, 547, DIVIDER);
+        line(dc, 16, 546, 190, 547, t.divider);
         let live = liveness(desktop);
         let (_, _, color) = live.colors();
         circle(dc, 18, 562, 7, color);
@@ -1397,13 +1697,7 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
         );
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         let chip = rect(190 - 52, 555, 52, 21);
-        shape(
-            dc,
-            chip,
-            4,
-            rgb(0x25, 0x25, 0x25),
-            Some(rgb(0x35, 0x35, 0x35)),
-        );
+        shape(dc, chip, 4, t.tile, Some(t.tile_border));
         text(
             dc,
             &version,
@@ -1418,9 +1712,10 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
 unsafe fn paint_banner(dc: HDC, desktop: &Desktop) {
     unsafe {
         let f = desktop.fonts();
+        let t = desktop.theme.get();
         let r = rect(LEFT, 14, RIGHT - LEFT, 36);
-        shape(dc, r, 6, BANNER, Some(BANNER_BORDER));
-        circle(dc, LEFT + 12, 23, 18, ACCENT);
+        shape(dc, r, t.tile_radius, t.banner, Some(t.banner_border));
+        circle(dc, LEFT + 12, 23, 18, t.accent);
         text(
             dc,
             "↑",
@@ -1450,14 +1745,15 @@ unsafe fn paint_banner(dc: HDC, desktop: &Desktop) {
 unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
     unsafe {
         let f = desktop.fonts();
+        let t = desktop.theme.get();
         let card = desktop.preview.lock().unwrap().clone();
         let prefs = desktop.prefs.lock().unwrap().clone();
         shape(
             dc,
             rect(LEFT, top, RIGHT - LEFT, 106),
-            8,
-            TILE,
-            Some(CARD_BORDER),
+            t.tile_radius + 2,
+            t.tile,
+            Some(t.card_border),
         );
 
         // Artwork: 78 px ship (or location) art with a 22 px mission badge.
@@ -1475,9 +1771,9 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                 shape(
                     dc,
                     rect(ax, ay, 78, 78),
-                    6,
-                    FIELD,
-                    Some(rgb(0x3f, 0x3f, 0x3f)),
+                    t.tile_radius,
+                    t.field,
+                    Some(t.field_border),
                 );
                 DrawIconEx(
                     dc,
@@ -1500,7 +1796,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             && small.starts_with("https://")
             && let Some(badge) = want_thumbnail(desktop, hwnd, &small, (22, 22), Mask::Circle)
         {
-            circle(dc, ax + 78 - 23, ay + 78 - 23, 28, TILE);
+            circle(dc, ax + 78 - 23, ay + 78 - 23, 28, t.tile);
             draw_thumbnail(dc, &badge, ax + 78 - 20, ay + 78 - 20);
         }
 
@@ -1526,7 +1822,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             &format!("{verb} {app}"),
             rect(x, top + 12, width - 140, 18),
             f.small_semi,
-            ACCENT,
+            t.accent,
             LEFT_LINE,
         );
 
@@ -1639,6 +1935,7 @@ unsafe fn heading(dc: HDC, desktop: &Desktop, top: i32, title: &str, subtitle: &
 unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
     unsafe {
         let f = desktop.fonts();
+        let t = desktop.theme.get();
         match desktop.page.get() {
             CARD => {
                 heading(
@@ -1659,23 +1956,32 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     "How Discord words your status",
                 );
                 for (index, (title, description)) in [
-                    ("Discord says", "The word in front of the game name"),
+                    (
+                        "Discord says",
+                        "The verb before your status (e.g. Playing Star Citizen)",
+                    ),
                     (
                         "Member list shows",
-                        "What follows it in server member lists",
+                        "Which line appears next to your name in server member lists",
                     ),
-                    ("Line 2", "Replaces the automatic location line"),
-                    ("Line 3", "Replaces the automatic ship and status line"),
+                    (
+                        "Line 2",
+                        "Overrides the automatic location line (leave blank for auto)",
+                    ),
+                    (
+                        "Line 3",
+                        "Overrides the automatic ship & contract line (blank for auto)",
+                    ),
                 ]
                 .into_iter()
                 .enumerate()
                 {
                     let r = activity_row(top, index as i32);
-                    shape(dc, r, 6, TILE, Some(TILE_BORDER));
+                    shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
                     text(
                         dc,
                         title,
-                        rect(r.left + 14, r.top + 8, 300, 18),
+                        rect(r.left + 14, r.top + 8, 340, 18),
                         f.body_semi,
                         TEXT,
                         LEFT_LINE,
@@ -1683,7 +1989,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     text(
                         dc,
                         description,
-                        rect(r.left + 14, r.top + 26, 340, 16),
+                        rect(r.left + 14, r.top + 26, 360, 16),
                         f.small,
                         MUTED,
                         LEFT_LINE,
@@ -1733,7 +2039,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     "Up to two links on your card",
                 );
                 let b = buttons_box(top);
-                shape(dc, b, 6, TILE, Some(TILE_BORDER));
+                shape(dc, b, t.tile_radius, t.tile, Some(t.tile_border));
                 for (index, caption) in ["Button 1", "Button 2"].into_iter().enumerate() {
                     let y = b.top + 8 + index as i32 * 58;
                     text(
@@ -1755,6 +2061,47 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     DT_LEFT | DT_WORDBREAK,
                 );
             }
+            APPEARANCE => {
+                heading(
+                    dc,
+                    desktop,
+                    top,
+                    "Appearance",
+                    "Customise the control panel theme",
+                );
+                text(
+                    dc,
+                    "COLOUR SCHEME",
+                    rect(LEFT, top + 26, 200, 16),
+                    f.tiny_semi,
+                    FAINT,
+                    LEFT_LINE,
+                );
+                text(
+                    dc,
+                    "ACCENT COLOUR",
+                    rect(LEFT, top + 124, 200, 16),
+                    f.tiny_semi,
+                    FAINT,
+                    LEFT_LINE,
+                );
+                text(
+                    dc,
+                    "CORNER STYLE",
+                    rect(LEFT, top + 196, 200, 16),
+                    f.tiny_semi,
+                    FAINT,
+                    LEFT_LINE,
+                );
+                text(
+                    dc,
+                    "Changes apply immediately and are saved to your local preferences.",
+                    rect(LEFT, top + 264, RIGHT - LEFT, 20),
+                    f.small,
+                    MUTED,
+                    LEFT_LINE,
+                );
+            }
             _ => {
                 heading(
                     dc,
@@ -1764,7 +2111,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     &format!("Installed: v{}", env!("CARGO_PKG_VERSION")),
                 );
                 let r = updates_row(top);
-                shape(dc, r, 6, TILE, Some(TILE_BORDER));
+                shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
                 let state = desktop.update.lock().unwrap().clone();
                 let installed = update::installed_copy();
                 let (title, description) = match &state {
@@ -1830,19 +2177,167 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
 }
 
 /// Background behind an owner-drawn button, so its rounded corners blend in.
-fn behind(id: i32, banner_bottom: i32, y: i32) -> u32 {
+fn behind(id: i32, t: Theme, banner_bottom: i32, y: i32) -> u32 {
     match id {
-        HIDE | SAVE | EXIT => FOOTER,
-        n if (NAV..NAV + 5).contains(&n) => RAIL,
-        UPDATE_NOW | RELEASE_NOTES if y < banner_bottom => BANNER,
-        UPDATE_ACTION | UPDATE_NOTES => TILE,
-        _ => CANVAS,
+        HIDE | SAVE | EXIT => t.footer,
+        n if (NAV..NAV + PAGES.len() as i32).contains(&n) => t.rail,
+        UPDATE_NOW | RELEASE_NOTES if y < banner_bottom => t.banner,
+        UPDATE_ACTION | UPDATE_NOTES => t.tile,
+        _ => t.canvas,
+    }
+}
+
+unsafe fn draw_combo_item(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        let dc = item.hDC;
+        let r = item.rcItem;
+        let selected = item.itemState & ODS_SELECTED != 0;
+        let in_edit = item.itemState & ODS_COMBOBOXEDIT != 0;
+        fill(dc, r, t.field);
+        if item.itemID == u32::MAX {
+            return;
+        }
+        let len = SendMessageW(item.hwndItem, CB_GETLBTEXTLEN, item.itemID as usize, 0);
+        if len <= 0 {
+            return;
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        SendMessageW(
+            item.hwndItem,
+            CB_GETLBTEXT,
+            item.itemID as usize,
+            buf.as_mut_ptr() as LPARAM,
+        );
+        let label = String::from_utf16_lossy(&buf[..len as usize]);
+        if !in_edit && selected {
+            let pill = rect(
+                r.left + 4,
+                r.top + 2,
+                (r.right - r.left - 8).max(4),
+                (r.bottom - r.top - 4).max(4),
+            );
+            shape(dc, pill, t.button_radius, t.nav_selected, None);
+            shape(
+                dc,
+                rect(
+                    pill.left,
+                    pill.top + 4,
+                    3,
+                    (pill.bottom - pill.top - 8).max(4),
+                ),
+                1,
+                t.accent,
+                None,
+            );
+        }
+        let pad = if in_edit { 8 } else { 14 };
+        text(
+            dc,
+            &label,
+            rect(
+                r.left + pad,
+                r.top,
+                (r.right - r.left - pad - 8).max(0),
+                r.bottom - r.top,
+            ),
+            if !in_edit && selected {
+                f.body_semi
+            } else {
+                f.body
+            },
+            if in_edit || selected { TEXT } else { SOFT },
+            LEFT_LINE,
+        );
+    }
+}
+
+/// Custom-painted closed combobox so dropdowns match the dark Fluent theme instead of default Win32 chrome.
+unsafe extern "system" fn paint_combo(
+    hwnd: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    id: usize,
+    font: usize,
+) -> LRESULT {
+    unsafe {
+        if msg == WM_NCDESTROY {
+            RemoveWindowSubclass(hwnd, Some(paint_combo), id);
+        }
+        if msg != WM_PAINT {
+            let result = DefSubclassProc(hwnd, msg, w, l);
+            if matches!(msg, WM_SETFOCUS | WM_KILLFOCUS | CB_SETCURSEL) {
+                InvalidateRect(hwnd, null_mut(), 0);
+            }
+            return result;
+        }
+        let parent = GetParent(hwnd);
+        let ptr = GetWindowLongPtrW(parent, GWLP_USERDATA) as *const Desktop;
+        let t = if ptr.is_null() {
+            Theme::from_prefs(&Preferences::default())
+        } else {
+            (*ptr).theme.get()
+        };
+        let mut paint = PAINTSTRUCT::default();
+        let dc = BeginPaint(hwnd, &mut paint);
+        let mut r = RECT::default();
+        GetClientRect(hwnd, &mut r);
+        let ctrl_id = GetDlgCtrlID(hwnd);
+        let bg = if matches!(ctrl_id, VERB | MEMBER_LIST) {
+            t.tile
+        } else {
+            t.canvas
+        };
+        fill(dc, r, bg);
+        let focused = windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() == hwnd;
+        let border = if focused { t.accent } else { t.field_border };
+        shape(dc, r, t.button_radius, t.field, Some(border));
+        if !focused {
+            line(
+                dc,
+                r.left + 4,
+                r.bottom - 1,
+                r.right - 4,
+                r.bottom,
+                t.field_bottom,
+            );
+        }
+        let sel = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+        if sel >= 0 {
+            let len = SendMessageW(hwnd, CB_GETLBTEXTLEN, sel as usize, 0);
+            if len > 0 {
+                let mut buf = vec![0u16; len as usize + 1];
+                SendMessageW(hwnd, CB_GETLBTEXT, sel as usize, buf.as_mut_ptr() as LPARAM);
+                let label = String::from_utf16_lossy(&buf[..len as usize]);
+                text(
+                    dc,
+                    &label,
+                    rect(10, 0, (r.right - 34).max(0), r.bottom),
+                    font as HFONT,
+                    TEXT,
+                    LEFT_LINE,
+                );
+            }
+        }
+        text(
+            dc,
+            "▾",
+            rect(r.right - 26, 0, 22, r.bottom),
+            font as HFONT,
+            if focused { t.accent } else { MUTED },
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        EndPaint(hwnd, &paint);
+        0
     }
 }
 
 unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
     unsafe {
         let f = desktop.fonts();
+        let t = desktop.theme.get();
         let id = item.CtlID as i32;
         let dc = item.hDC;
         let r = item.rcItem;
@@ -1850,14 +2345,108 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
         fill(
             dc,
             r,
-            behind(id, 50, if desktop.banner.get() { 20 } else { 999 }),
+            behind(id, t, 50, if desktop.banner.get() { 20 } else { 999 }),
         );
         let mut label = [0u16; 64];
         let len = GetWindowTextW(item.hwndItem, label.as_mut_ptr(), label.len() as i32);
         let label = String::from_utf16_lossy(&label[..len as usize]);
         let center = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
 
-        if (CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id) {
+        if (THEME_BTN..THEME_BTN + THEMES.len() as i32).contains(&id) {
+            let index = (id - THEME_BTN) as usize;
+            let (key, name, canvas_c, rail_c, tile_c) = THEMES[index];
+            let selected = desktop.prefs.lock().unwrap().theme == key;
+            shape(
+                dc,
+                r,
+                t.tile_radius,
+                t.tile,
+                Some(if selected { t.accent } else { t.tile_border }),
+            );
+            // Mini theme swatch preview on the left.
+            let sw = rect(r.left + 10, r.top + 12, 40, 40);
+            shape(dc, sw, 4, canvas_c, Some(t.tile_border));
+            shape(dc, rect(sw.left + 2, sw.top + 2, 11, 36), 2, rail_c, None);
+            shape(dc, rect(sw.left + 16, sw.top + 6, 20, 12), 2, tile_c, None);
+            shape(
+                dc,
+                rect(sw.left + 16, sw.top + 22, 14, 10),
+                2,
+                t.accent,
+                None,
+            );
+            text(
+                dc,
+                name,
+                rect(r.left + 58, r.top + 14, r.right - r.left - 78, 18),
+                if selected { f.body_semi } else { f.body },
+                TEXT,
+                LEFT_LINE,
+            );
+            text(
+                dc,
+                if selected { "Active" } else { "Select" },
+                rect(r.left + 58, r.top + 33, r.right - r.left - 78, 16),
+                f.tiny,
+                if selected { t.accent } else { MUTED },
+                LEFT_LINE,
+            );
+            if selected {
+                circle(dc, r.right - 22, r.top + 8, 14, t.accent);
+                text(
+                    dc,
+                    "✓",
+                    rect(r.right - 22, r.top + 8, 15, 15),
+                    f.tiny_semi,
+                    ON_ACCENT,
+                    center,
+                );
+            }
+        } else if (ACCENT_BTN..ACCENT_BTN + ACCENTS.len() as i32).contains(&id) {
+            let index = (id - ACCENT_BTN) as usize;
+            let (key, name, color, _) = ACCENTS[index];
+            let selected = desktop.prefs.lock().unwrap().accent == key;
+            shape(
+                dc,
+                r,
+                t.button_radius,
+                if selected { t.nav_selected } else { t.tile },
+                Some(if selected { color } else { t.tile_border }),
+            );
+            circle(
+                dc,
+                r.left + 12,
+                r.top + (r.bottom - r.top - 14) / 2,
+                14,
+                color,
+            );
+            text(
+                dc,
+                name,
+                rect(r.left + 32, r.top, r.right - r.left - 38, r.bottom - r.top),
+                if selected { f.small_semi } else { f.small },
+                if selected { TEXT } else { SOFT },
+                LEFT_LINE,
+            );
+        } else if (CORNER_BTN..CORNER_BTN + 2).contains(&id) {
+            let sharp = id == CORNER_BTN + 1;
+            let selected = desktop.prefs.lock().unwrap().sharp_corners == sharp;
+            shape(
+                dc,
+                r,
+                if sharp { 2 } else { 6 },
+                if selected { t.nav_selected } else { t.tile },
+                Some(if selected { t.accent } else { t.tile_border }),
+            );
+            text(
+                dc,
+                &label,
+                r,
+                if selected { f.body_semi } else { f.body },
+                if selected { TEXT } else { SOFT },
+                center,
+            );
+        } else if (CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id) {
             // Picture tile: the wiki image, a number chip, and a highlight when in use.
             let index = (id - CHOICE) as usize;
             let (w, h) = (r.right - r.left, r.bottom - r.top);
@@ -1874,9 +2463,9 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             shape(
                 dc,
                 r,
-                6,
-                if selected { ACCENT } else { TILE },
-                Some(if selected { ACCENT } else { TILE_BORDER }),
+                t.tile_radius,
+                if selected { t.accent } else { t.tile },
+                Some(if selected { t.accent } else { t.tile_border }),
             );
             match picture {
                 Some(thumb) => draw_thumbnail(dc, &thumb, r.left + 2, r.top + 2),
@@ -1889,13 +2478,29 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             } else {
                 (index + 1).to_string()
             };
-            let measured = text(dc, &chip_label, rect(0, 0, 200, 16), f.tiny_semi, TEXT, DT_SINGLELINE | DT_CALCRECT);
-            let chip = rect(r.left + 6, r.bottom - 22, measured.right - measured.left + 12, 16);
+            let measured = text(
+                dc,
+                &chip_label,
+                rect(0, 0, 200, 16),
+                f.tiny_semi,
+                TEXT,
+                DT_SINGLELINE | DT_CALCRECT,
+            );
+            let chip = rect(
+                r.left + 6,
+                r.bottom - 22,
+                measured.right - measured.left + 12,
+                16,
+            );
             shape(
                 dc,
                 chip,
                 4,
-                if selected { ACCENT } else { rgb(0x14, 0x14, 0x14) },
+                if selected {
+                    t.accent
+                } else {
+                    rgb(0x14, 0x14, 0x14)
+                },
                 None,
             );
             text(
@@ -1907,20 +2512,27 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 center,
             );
             if selected {
-                circle(dc, r.right - 22, r.top + 6, 16, ACCENT);
-                text(dc, "✓", rect(r.right - 22, r.top + 6, 17, 17), f.small_semi, ON_ACCENT, center);
+                circle(dc, r.right - 22, r.top + 6, 16, t.accent);
+                text(
+                    dc,
+                    "✓",
+                    rect(r.right - 22, r.top + 6, 17, 17),
+                    f.small_semi,
+                    ON_ACCENT,
+                    center,
+                );
             }
             if pressed {
                 InvertRect(dc, &rect(r.left + 2, r.top + 2, w - 4, h - 4));
             }
-        } else if (NAV..NAV + 5).contains(&id) {
+        } else if (NAV..NAV + PAGES.len() as i32).contains(&id) {
             let page = (id - NAV) as usize;
             let selected = page == desktop.page.get();
             if selected || pressed {
-                shape(dc, r, 5, NAV_SELECTED, None);
+                shape(dc, r, t.button_radius, t.nav_selected, None);
             }
             if selected {
-                shape(dc, rect(r.left, r.top + 9, 3, 18), 1, ACCENT, None);
+                shape(dc, rect(r.left, r.top + 9, 3, 18), 1, t.accent, None);
             }
             text(
                 dc,
@@ -1938,13 +2550,7 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 let count = desktop.prefs.lock().unwrap().overrides().len();
                 if count > 0 {
                     let chip = rect(r.right - 36, r.top + 9, 26, 18);
-                    shape(
-                        dc,
-                        chip,
-                        9,
-                        rgb(0x28, 0x28, 0x28),
-                        Some(rgb(0x38, 0x38, 0x38)),
-                    );
+                    shape(dc, chip, 9, t.tile, Some(t.tile_border));
                     text(
                         dc,
                         &count.to_string(),
@@ -1958,10 +2564,10 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             if page == UPDATES_PAGE
                 && matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_))
             {
-                circle(dc, r.right - 20, r.top + 15, 7, ACCENT);
+                circle(dc, r.right - 20, r.top + 15, 7, t.accent);
             }
         } else if matches!(id, RELEASE_NOTES | UPDATE_NOTES) {
-            let measured = text(dc, &label, r, f.small_semi, ACCENT, center);
+            let measured = text(dc, &label, r, f.small_semi, t.accent, center);
             let y = measured.bottom + (r.bottom - r.top - (measured.bottom - measured.top)) / 2 - 1;
             let width = measured.right - measured.left;
             let x = r.left + (r.right - r.left - width) / 2;
@@ -1971,7 +2577,7 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 y.min(r.bottom - 3),
                 x + width,
                 y.min(r.bottom - 3) + 1,
-                ACCENT,
+                t.accent,
             );
         } else {
             let primary = id == SAVE
@@ -1980,7 +2586,7 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                     && matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_)));
             let (face, border, color, font) = if primary {
                 (
-                    if pressed { ACCENT_PRESSED } else { ACCENT },
+                    if pressed { t.accent_pressed } else { t.accent },
                     None,
                     ON_ACCENT,
                     if id == UPDATE_NOW {
@@ -1991,35 +2597,33 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 )
             } else if id == EXIT {
                 (
-                    rgb(0x26, 0x26, 0x26),
-                    Some(rgb(0x3a, 0x3a, 0x3a)),
+                    t.tile,
+                    Some(t.tile_border),
                     rgb(0xbc, 0xbc, 0xbc),
                     f.body_semi,
                 )
             } else if id == HIDE {
                 (
-                    if pressed {
-                        rgb(0x38, 0x38, 0x38)
-                    } else {
-                        rgb(0x2d, 0x2d, 0x2d)
-                    },
-                    Some(rgb(0x3f, 0x3f, 0x3f)),
+                    if pressed { t.nav_selected } else { t.tile },
+                    Some(t.field_border),
                     rgb(0xec, 0xec, 0xec),
                     f.body_semi,
                 )
             } else {
                 (
-                    if pressed {
-                        rgb(0x3c, 0x3c, 0x3c)
-                    } else {
-                        rgb(0x32, 0x32, 0x32)
-                    },
-                    Some(rgb(0x44, 0x44, 0x44)),
+                    if pressed { t.nav_selected } else { t.tile },
+                    Some(t.field_border),
                     TEXT,
                     f.body_semi,
                 )
             };
-            shape(dc, r, if id == UPDATE_NOW { 4 } else { 5 }, face, border);
+            shape(
+                dc,
+                r,
+                if id == UPDATE_NOW { 4 } else { t.button_radius },
+                face,
+                border,
+            );
             text(dc, &label, r, font, color, center);
         }
         if item.itemState & ODS_FOCUS != 0 {
@@ -2050,12 +2654,19 @@ unsafe extern "system" fn paint_toggle(
             }
             return result;
         }
+        let parent = GetParent(hwnd);
+        let ptr = GetWindowLongPtrW(parent, GWLP_USERDATA) as *const Desktop;
+        let t = if ptr.is_null() {
+            Theme::from_prefs(&Preferences::default())
+        } else {
+            (*ptr).theme.get()
+        };
         let mut paint = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut paint);
         let mut r = RECT::default();
         GetClientRect(hwnd, &mut r);
-        fill(dc, r, CANVAS);
-        shape(dc, r, 6, TILE, Some(TILE_BORDER));
+        fill(dc, r, t.canvas);
+        shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
         let on = SendMessageW(hwnd, BM_GETCHECK, 0, 0) == 1;
         let enabled = IsWindowEnabled(hwnd) != 0;
         let mut label = [0u16; 64];
@@ -2081,7 +2692,7 @@ unsafe extern "system" fn paint_toggle(
                 rect(sx, sy, 36, 18),
                 9,
                 if enabled {
-                    ACCENT
+                    t.accent
                 } else {
                     rgb(0x4a, 0x6a, 0x7a)
                 },
@@ -2093,7 +2704,7 @@ unsafe extern "system" fn paint_toggle(
                 dc,
                 rect(sx, sy, 36, 18),
                 9,
-                CANVAS,
+                t.canvas,
                 Some(rgb(0x8c, 0x8c, 0x8c)),
             );
             circle(dc, sx + 4, sy + 4, 10, rgb(0xcf, 0xcf, 0xcf));
@@ -2194,7 +2805,7 @@ unsafe fn refresh(hwnd: HWND, desktop: &Desktop) {
                 },
             );
             InvalidateRect(hwnd, null_mut(), 0);
-            for index in 0..5 {
+            for index in 0..PAGES.len() as i32 {
                 InvalidateRect(GetDlgItem(hwnd, NAV + index), null_mut(), 0);
             }
             for id in [UPDATE_ACTION, UPDATE_NOW] {
@@ -2249,12 +2860,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             WM_PAINT => paint(hwnd, desktop),
             WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
                 let dc = w as HDC;
-                SetBkColor(dc, FIELD);
+                SetBkColor(dc, desktop.theme.get().field);
                 SetTextColor(dc, TEXT);
-                return desktop.field as LRESULT;
+                return desktop.field.get() as LRESULT;
             }
             WM_DRAWITEM => {
-                draw_button(desktop, &*(l as *const DRAWITEMSTRUCT));
+                let item = &*(l as *const DRAWITEMSTRUCT);
+                if item.CtlType == ODT_COMBOBOX {
+                    draw_combo_item(desktop, item);
+                } else {
+                    draw_button(desktop, item);
+                }
                 return 1;
             }
             WM_CREATE => {
@@ -2323,7 +2939,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                         DestroyWindow(hwnd);
                     }
                     HIDE => hide(hwnd, desktop),
-                    n if (NAV..NAV + 5).contains(&n) => {
+                    n if (NAV..NAV + PAGES.len() as i32).contains(&n) => {
                         desktop.page.set((n - NAV) as usize);
                         // Images opens on the ship you're flying, when it has artwork.
                         if desktop.page.get() == IMAGES {
@@ -2334,7 +2950,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                                 .as_ref()
                                 .map(|card| card.large_text.clone());
                             if let Some(index) = flying.and_then(|name| {
-                                desktop.targets.iter().position(|t| !t.mission && t.key == name)
+                                desktop
+                                    .targets
+                                    .iter()
+                                    .position(|t| !t.mission && t.key == name)
                             }) {
                                 desktop.target.set(index);
                                 SendDlgItemMessageW(hwnd, IMAGE_TARGET, CB_SETCURSEL, index, 0);
@@ -2343,7 +2962,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                         desktop.painted.borrow_mut().clear();
                         layout(hwnd, desktop);
                         refresh(hwnd, desktop);
-                        for index in 0..5 {
+                        for index in 0..PAGES.len() as i32 {
                             InvalidateRect(GetDlgItem(hwnd, NAV + index), null_mut(), 0);
                         }
                     }
@@ -2384,11 +3003,39 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                     UPLOAD_IMAGE => start_upload(hwnd, desktop),
                     USE_LINK => {
                         let link = read_text(hwnd, IMAGE_LINK);
-                        if !link.starts_with("https://") || link.len() > 256 || link.contains(char::is_whitespace) {
-                            show_error("Paste a picture link that starts with https:// (Discord can't show files on your PC).");
+                        if !link.starts_with("https://")
+                            || link.len() > 256
+                            || link.contains(char::is_whitespace)
+                        {
+                            show_error(
+                                "Paste a picture link that starts with https:// (Discord can't show files on your PC).",
+                            );
                         } else {
                             set_picture(hwnd, desktop, Some(link));
                             SetDlgItemTextW(hwnd, IMAGE_LINK, wide("").as_ptr());
+                        }
+                    }
+                    n if (THEME_BTN..THEME_BTN + THEMES.len() as i32).contains(&n) => {
+                        let key = THEMES[(n - THEME_BTN) as usize].0;
+                        let mut next = desktop.prefs.lock().unwrap().clone();
+                        next.theme = key.to_string();
+                        if commit(desktop, next) {
+                            apply_theme(hwnd, desktop);
+                        }
+                    }
+                    n if (ACCENT_BTN..ACCENT_BTN + ACCENTS.len() as i32).contains(&n) => {
+                        let key = ACCENTS[(n - ACCENT_BTN) as usize].0;
+                        let mut next = desktop.prefs.lock().unwrap().clone();
+                        next.accent = key.to_string();
+                        if commit(desktop, next) {
+                            apply_theme(hwnd, desktop);
+                        }
+                    }
+                    n if (CORNER_BTN..CORNER_BTN + 2).contains(&n) => {
+                        let mut next = desktop.prefs.lock().unwrap().clone();
+                        next.sharp_corners = n == CORNER_BTN + 1;
+                        if commit(desktop, next) {
+                            apply_theme(hwnd, desktop);
                         }
                     }
                     UPDATE_NOW | UPDATE_ACTION => start_update(hwnd, desktop),
@@ -2420,7 +3067,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                         DeleteObject(font);
                     }
                 }
-                DeleteObject(desktop.field);
+                DeleteObject(desktop.field.get());
                 PostQuitMessage(0);
             }
             _ if msg == desktop.taskbar_created => {
@@ -2450,6 +3097,34 @@ unsafe fn read_text(hwnd: HWND, id: i32) -> String {
 
 unsafe fn selected(hwnd: HWND, id: i32) -> Option<usize> {
     unsafe { usize::try_from(SendDlgItemMessageW(hwnd, id, CB_GETCURSEL, 0, 0)).ok() }
+}
+
+/// Applies the saved theme/accent/corners live to the window, title bar, and all child controls.
+unsafe fn apply_theme(hwnd: HWND, desktop: &Desktop) {
+    unsafe {
+        let t = Theme::from_prefs(&desktop.prefs.lock().unwrap());
+        desktop.theme.set(t);
+        let old_brush = desktop.field.replace(CreateSolidBrush(t.field));
+        DeleteObject(old_brush);
+        for (attribute, color) in [
+            (DWMWA_CAPTION_COLOR, t.caption),
+            (DWMWA_BORDER_COLOR, t.card_border),
+        ] {
+            DwmSetWindowAttribute(
+                hwnd,
+                attribute as u32,
+                (&color as *const u32).cast(),
+                size_of::<u32>() as u32,
+            );
+        }
+        desktop.painted.borrow_mut().clear();
+        RedrawWindow(
+            hwnd,
+            std::ptr::null(),
+            null_mut(),
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+        );
+    }
 }
 
 /// Saves `next` and makes it current, or reports the error and returns false.
@@ -2640,6 +3315,9 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
                 .or(old.status_display.clone()),
             ship_images: old.ship_images.clone(),
             mission_images: old.mission_images.clone(),
+            theme: old.theme.clone(),
+            accent: old.accent.clone(),
+            sharp_corners: old.sharp_corners,
         };
         if !commit(desktop, next) && id != SAVE {
             let previous = match id {

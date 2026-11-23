@@ -91,7 +91,9 @@ pub fn prepare_upload(bytes: &[u8]) -> Result<Vec<u8>> {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(128 << 20);
     reader.limits(limits);
-    let mut decoder = reader.into_decoder().context("Could not decode the image")?;
+    let mut decoder = reader
+        .into_decoder()
+        .context("Could not decode the image")?;
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
