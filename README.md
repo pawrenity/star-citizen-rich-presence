@@ -34,9 +34,11 @@ timer.
 
 ## Quick start
 
-1. Download the Windows ZIP from **Releases** and extract it.
+1. From **Releases**, download either `star-citizen-rich-presence-setup-x64.exe` (installer:
+   Start menu shortcuts, optional start with Windows, uninstall from Windows Settings, no
+   admin rights needed) or the portable ZIP (extract it anywhere).
 2. Open Discord (the desktop app).
-3. Run `star-citizen-rich-presence.exe`.
+3. Run Star Citizen Rich Presence.
 
 The control panel opens and waits for Star Citizen. Your status clears when the game
 closes. You normally don't need administrator rights.
