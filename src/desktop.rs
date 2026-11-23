@@ -462,8 +462,10 @@ struct Desktop {
     targets: Vec<Target>,
     /// Index into `targets` shown on the Images page.
     target: Cell<usize>,
-    /// 0-based page index into `choices()` on the Images page (18 tiles per page).
+    /// 0-based page index into `choices()` on the Images page (27 tiles per page).
     image_page: Cell<usize>,
+    /// Last release version we already showed a Windows tray notification for.
+    notified_update: std::cell::RefCell<Option<String>>,
 }
 
 /// A ship or contract type whose picture can be customised.
@@ -748,6 +750,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             targets: targets(),
             target: Cell::new(0),
             image_page: Cell::new(0),
+            notified_update: Default::default(),
         });
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let mut frame = RECT {
@@ -808,7 +811,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
         }
         let running = Arc::new(AtomicBool::new(true));
 
-        // Update checks: shortly after start, then daily, while enabled.
+        // Update checks: shortly after start, then every 30 minutes, while enabled.
         if config.check_for_updates {
             let prefs = Arc::clone(&prefs);
             let state = Arc::clone(&update_state);
@@ -821,7 +824,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
                         if prefs.lock().unwrap().updates {
                             check_for_update(Arc::clone(&state), handle);
                         }
-                        next = Instant::now() + Duration::from_secs(24 * 60 * 60);
+                        next = Instant::now() + Duration::from_secs(30 * 60);
                     }
                     std::thread::sleep(Duration::from_secs(1));
                 }
@@ -875,6 +878,32 @@ unsafe fn tray(hwnd: HWND, icon: HICON, operation: u32) -> bool {
     let tip = wide("Star Citizen Rich Presence");
     data.szTip[..tip.len()].copy_from_slice(&tip);
     unsafe { Shell_NotifyIconW(operation, &data) != 0 }
+}
+
+/// Shows a native Windows tray notification when a new release is detected.
+unsafe fn notify_update(hwnd: HWND, desktop: &Desktop, version: &str) {
+    if !desktop.tray_ready.get() {
+        return;
+    }
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    let title = wide("Update available");
+    let body = wide(&format!(
+        "Star Citizen Rich Presence v{version} is ready. Click to open and update."
+    ));
+    let tlen = title.len().min(data.szInfoTitle.len());
+    data.szInfoTitle[..tlen].copy_from_slice(&title[..tlen]);
+    let blen = body.len().min(data.szInfo.len());
+    data.szInfo[..blen].copy_from_slice(&body[..blen]);
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
 }
 
 unsafe fn hide(hwnd: HWND, desktop: &Desktop) {
@@ -2808,6 +2837,14 @@ unsafe fn refresh(hwnd: HWND, desktop: &Desktop) {
         }
         let uploading = matches!(*desktop.upload.lock().unwrap(), UploadState::Uploading);
         let state = desktop.update.lock().unwrap().clone();
+        if let UpdateState::Available(ref release) = state {
+            let should_notify =
+                desktop.notified_update.borrow().as_deref() != Some(&release.version);
+            if should_notify {
+                *desktop.notified_update.borrow_mut() = Some(release.version.clone());
+                notify_update(hwnd, desktop, &release.version);
+            }
+        }
         let banner = matches!(
             state,
             UpdateState::Available(_) | UpdateState::Downloading(_)
@@ -2949,6 +2986,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             TRAY if l as u32 == WM_LBUTTONUP => {
                 ShowWindow(hwnd, SW_RESTORE);
                 SetForegroundWindow(hwnd);
+            }
+            TRAY if l as u32 == NIN_BALLOONUSERCLICK => {
+                ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+                desktop.page.set(UPDATES_PAGE);
+                desktop.painted.borrow_mut().clear();
+                layout(hwnd, desktop);
+                refresh(hwnd, desktop);
+                for index in 0..PAGES.len() as i32 {
+                    InvalidateRect(GetDlgItem(hwnd, NAV + index), null_mut(), 0);
+                }
             }
             TRAY if l as u32 == WM_RBUTTONUP => {
                 let menu = CreatePopupMenu();
