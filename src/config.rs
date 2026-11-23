@@ -77,6 +77,8 @@ pub struct Config {
     pub show_artwork: bool,
     pub custom_state: String,
     pub custom_details: String,
+    /// Optional custom game name (overrides "Star Citizen" where Discord allows it).
+    pub custom_name: String,
     /// Optional additional aliases; embedded aliases remain available.
     pub locations_file: Option<PathBuf>,
     /// Asset keys must exist in YOUR Discord application. Unlisted locations use logo.
@@ -111,6 +113,7 @@ impl Default for Config {
             show_artwork: true,
             custom_state: String::new(),
             custom_details: String::new(),
+            custom_name: String::new(),
             locations_file: None,
             image_assets: Default::default(),
             ship_images: Default::default(),

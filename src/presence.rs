@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snapshot {
+    /// Optional custom game name; empty keeps the Discord application's default name.
+    pub name: String,
     pub details: String,
     pub state: String,
     pub large_image: String,
@@ -33,6 +35,7 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         Phase::Playing => ("Exploring the verse".into(), config.channel.clone()),
     };
     let mut snapshot = Snapshot {
+        name: limit(&crate::parser::strip_markup(&config.custom_name), 128),
         details,
         state: String::new(),
         large_image: "logo".into(),

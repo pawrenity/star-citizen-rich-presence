@@ -51,6 +51,7 @@ const NOTICES: i32 = 112;
 const PARTY: i32 = 113;
 const UPDATES: i32 = 114;
 const DETAILS: i32 = 119;
+const GAME_NAME: i32 = 120;
 const LINK_FIELDS: [(i32, i32); 2] = [(121, 122), (123, 124)];
 const VERB: i32 = 130;
 const MEMBER_LIST: i32 = 131;
@@ -321,6 +322,7 @@ struct Preferences {
     updates: bool,
     custom: String,
     details: String,
+    game_name: String,
     buttons: Option<Vec<CardButton>>,
     /// `None` keeps the value from scrp.toml.
     activity_type: Option<String>,
@@ -354,6 +356,7 @@ impl Preferences {
             updates: config.check_for_updates,
             custom: config.custom_state.clone(),
             details: config.custom_details.clone(),
+            game_name: config.custom_name.clone(),
             buttons: None,
             activity_type: None,
             status_display: None,
@@ -375,6 +378,7 @@ impl Preferences {
         config.show_party = self.party;
         config.custom_state.clone_from(&self.custom);
         config.custom_details.clone_from(&self.details);
+        config.custom_name.clone_from(&self.game_name);
         if let Some(buttons) = &self.buttons {
             config.buttons.clone_from(buttons);
         }
@@ -927,9 +931,9 @@ fn tile_rect(top: i32, column: i32, row: i32, full: bool) -> RECT {
     rect(x, y, if full { RIGHT - LEFT } else { COLUMN }, 36)
 }
 
-/// Activity page rows: the control sits at the right of each 50 px row.
+/// Activity page rows: the control sits at the right of each 44 px row.
 fn activity_row(top: i32, index: i32) -> RECT {
-    rect(LEFT, top + 26 + index * 58, RIGHT - LEFT, 50)
+    rect(LEFT, top + 26 + index * 50, RIGHT - LEFT, 44)
 }
 
 /// Picture tile `index` on the Images page: six 104×60 tiles per row.
@@ -954,11 +958,11 @@ fn updates_row(top: i32) -> RECT {
 /// Field frames drawn behind EDIT controls: (id, frame).
 fn fields(page: usize, top: i32) -> Vec<(i32, RECT)> {
     match page {
-        ACTIVITY => [(2, DETAILS), (3, CUSTOM)]
+        ACTIVITY => [(2, GAME_NAME), (3, DETAILS), (4, CUSTOM)]
             .into_iter()
             .map(|(row, id)| {
                 let r = activity_row(top, row);
-                (id, rect(r.right - 14 - 240, r.top + 10, 240, 30))
+                (id, rect(r.right - 14 - 260, r.top + 7, 260, 30))
             })
             .collect(),
         IMAGES => vec![(IMAGE_LINK, link_frame(top))],
@@ -1039,7 +1043,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
                 hwnd,
                 id,
                 page == ACTIVITY,
-                rect(r.right - 14 - 260, r.top + 10, 260, 220),
+                rect(r.right - 14 - 260, r.top + 7, 260, 220),
             );
         }
         // Images page.
@@ -1137,7 +1141,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
         );
 
         // EDIT controls sit inside painted field frames.
-        for id in [DETAILS, CUSTOM, IMAGE_LINK, 121, 122, 123, 124] {
+        for id in [GAME_NAME, DETAILS, CUSTOM, IMAGE_LINK, 121, 122, 123, 124] {
             place(hwnd, id, false, hidden);
         }
         for (id, frame) in fields(page, top) {
@@ -1275,6 +1279,7 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
                 SendMessageW(member, CB_SETCURSEL, index, 0);
             }
         }
+        edit(GAME_NAME, &prefs.game_name, "Star Citizen", 128);
         edit(DETAILS, &prefs.details, "Automatic", 128);
         edit(CUSTOM, &prefs.custom, "Automatic", 128);
 
@@ -1846,12 +1851,14 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             .iter()
             .find(|(key, _)| *key == verb)
             .map_or("Playing", |(_, label)| label);
-        let app =
-            if desktop.base.discord_app_id == star_citizen_rich_presence::config::DEFAULT_APP_ID {
-                "Star Citizen"
-            } else {
-                "your Discord app"
-            };
+        let app = if !prefs.game_name.trim().is_empty() {
+            prefs.game_name.trim()
+        } else if desktop.base.discord_app_id == star_citizen_rich_presence::config::DEFAULT_APP_ID
+        {
+            "Star Citizen"
+        } else {
+            "your Discord app"
+        };
         text(
             dc,
             &format!("{verb} {app}"),
@@ -2000,6 +2007,10 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                         "Which line appears next to your name in server member lists",
                     ),
                     (
+                        "Game name",
+                        "Overrides the game title (e.g. Scam Citizen) — click Apply",
+                    ),
+                    (
                         "Line 2",
                         "Overrides the automatic location line (leave blank for auto)",
                     ),
@@ -2016,7 +2027,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     text(
                         dc,
                         title,
-                        rect(r.left + 14, r.top + 8, 340, 18),
+                        rect(r.left + 14, r.top + 5, 340, 18),
                         f.body_semi,
                         TEXT,
                         LEFT_LINE,
@@ -2024,7 +2035,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     text(
                         dc,
                         description,
-                        rect(r.left + 14, r.top + 26, 360, 16),
+                        rect(r.left + 14, r.top + 23, 360, 16),
                         f.small,
                         MUTED,
                         LEFT_LINE,
@@ -3374,6 +3385,11 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
                 read_text(hwnd, DETAILS)
             } else {
                 old.details.clone()
+            },
+            game_name: if id == SAVE {
+                read_text(hwnd, GAME_NAME)
+            } else {
+                old.game_name.clone()
             },
             buttons,
             activity_type: selected(hwnd, VERB)

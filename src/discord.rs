@@ -124,9 +124,16 @@ fn activity_payload(s: &Snapshot) -> Value {
         assets["small_text"] = json!(s.small_text);
     } else if s.large_image != "logo" {
         assets["small_image"] = json!("logo");
-        assets["small_text"] = json!("Star Citizen");
+        assets["small_text"] = json!(if s.name.is_empty() {
+            "Star Citizen"
+        } else {
+            s.name.as_str()
+        });
     }
     let mut payload = json!({"type":s.activity_type,"details":s.details,"state":s.state,"assets":assets,"timestamps":{"start":s.started}});
+    if !s.name.is_empty() {
+        payload["name"] = json!(s.name);
+    }
     if s.status_display != 0 {
         payload["status_display_type"] = json!(s.status_display);
     }
@@ -340,6 +347,7 @@ mod tests {
             .unwrap();
         client.await_response(None).unwrap();
         let snapshot = Snapshot {
+            name: String::new(),
             details: "Playing".into(),
             state: "LIVE".into(),
             large_image: "logo".into(),
@@ -405,6 +413,7 @@ mod tests {
     #[test]
     fn activity_optional_fields_and_clear_payload_are_correct() {
         let snapshot = Snapshot {
+            name: String::new(),
             details: "Playing".into(),
             state: "LIVE".into(),
             large_image: "logo".into(),

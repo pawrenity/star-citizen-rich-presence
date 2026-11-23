@@ -62,6 +62,7 @@ fn command_line() -> Result<()> {
             transport.connect().context("Discord handshake failed")?;
             transport
                 .publish(&Snapshot {
+                    name: config.custom_name.clone(),
                     details: "Checking Discord integration".into(),
                     state: "Star Citizen Rich Presence".into(),
                     large_image: "logo".into(),
