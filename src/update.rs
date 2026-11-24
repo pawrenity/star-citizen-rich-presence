@@ -3,7 +3,9 @@
 //! The only requests are to api.github.com (latest release) and, when the user clicks
 //! "Update now", the release's own installer and SHA256SUMS.txt. Nothing about the
 //! player is sent. The installer is verified against SHA256SUMS.txt before it runs.
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result};
+#[cfg(windows)]
+use anyhow::{bail, ensure};
 use serde::Deserialize;
 
 pub const LATEST_RELEASE: &str =
