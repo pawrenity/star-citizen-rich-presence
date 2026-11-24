@@ -294,11 +294,10 @@ fn limit(text: &str, max: usize) -> String {
 
 /// Discord needs at least 2 characters; shorter custom names fall back to the app default.
 fn custom_name(config: &Config) -> String {
-    let name = crate::parser::strip_markup(&config.custom_name);
-    if name.chars().count() < 2 {
+    if crate::config::custom_name_too_short(&config.custom_name) {
         String::new()
     } else {
-        limit(&name, 128)
+        limit(&crate::parser::strip_markup(&config.custom_name), 128)
     }
 }
 

@@ -4,7 +4,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use star_citizen_rich_presence::{
     artwork,
-    config::{CardButton, custom_text_too_short},
+    config::{CardButton, custom_name_too_short, custom_text_too_short},
     net,
     thumbnail::{self, Mask, Thumbnail},
     update::{self, Release},
@@ -4840,15 +4840,16 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
                 show_error(&error.to_string());
                 return;
             }
-            for (field, label) in [
-                (DETAILS, "Line 2"),
-                (CUSTOM, "Line 3"),
-                (GAME_NAME, "Game name"),
-            ] {
+            for (field, label) in [(DETAILS, "Line 2"), (CUSTOM, "Line 3")] {
                 if custom_text_too_short(&read_text(hwnd, field)) {
                     show_error(&format!("{label} must be empty or at least 2 characters"));
                     return;
                 }
+            }
+            // The card shows the game name with markup stripped, so check it the same way.
+            if custom_name_too_short(&read_text(hwnd, GAME_NAME)) {
+                show_error("Game name must be empty or at least 2 characters");
+                return;
             }
             buttons = Some(links);
         }

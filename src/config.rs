@@ -131,6 +131,11 @@ pub fn custom_text_too_short(text: &str) -> bool {
     !trimmed.is_empty() && trimmed.chars().count() < 2
 }
 
+/// The game name is shown with markup stripped, so the length rule applies after stripping.
+pub fn custom_name_too_short(name: &str) -> bool {
+    custom_text_too_short(&crate::parser::strip_markup(name))
+}
+
 impl Config {
     pub fn load(args: &Args) -> Result<Self> {
         let implicit = std::env::current_exe()
@@ -291,6 +296,10 @@ mod tests {
         assert!(!custom_text_too_short("ab"));
         assert!(!custom_text_too_short("é?"));
         assert!(custom_text_too_short("é"));
+        // Markup is stripped before the length check, as the card does.
+        assert!(custom_name_too_short("<b>A</b>"));
+        assert!(!custom_name_too_short("<b>AB</b>"));
+        assert!(!custom_name_too_short(""));
         // Startup must not fail on short custom text; presence falls back to automatic text.
         Config {
             custom_state: "x".into(),
