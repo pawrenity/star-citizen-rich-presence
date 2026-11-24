@@ -99,7 +99,7 @@ const PAGES: [&str; 6] = [
 ];
 /// Segoe MDL2 Assets glyphs for the rail: card, message, picture, link, colour, sync.
 const NAV_GLYPHS: [&str; 6] = [
-    "\u{E779}", "\u{E8BD}", "\u{E8B9}", "\u{E71B}", "\u{E790}", "\u{E895}",
+    "\u{E8A1}", "\u{E8BD}", "\u{E8B9}", "\u{E71B}", "\u{E790}", "\u{E895}",
 ];
 const CARD: usize = 0;
 const ACTIVITY: usize = 1;
@@ -407,12 +407,23 @@ unsafe fn window_scale(hwnd: HWND) -> i32 {
     }
 }
 
-/// Window DPI, or `SCRP_UI_SCALE` when set (used to screenshot other scalings).
+/// Largest scale whose panel still fits on the primary screen (title bar included).
+fn largest_fitting_scale() -> i32 {
+    let screen = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    if screen <= 0 {
+        return 500;
+    }
+    (((screen - s(56)) * 100) / CLIENT_HEIGHT).clamp(100, 500)
+}
+
+/// Window DPI, or `SCRP_UI_SCALE` when set (used to screenshot other scalings),
+/// never larger than the screen can show.
 unsafe fn preferred_scale(hwnd: HWND) -> i32 {
-    std::env::var("SCRP_UI_SCALE")
+    let wanted = std::env::var("SCRP_UI_SCALE")
         .ok()
         .and_then(|value| value.parse::<i32>().ok())
-        .unwrap_or_else(|| unsafe { window_scale(hwnd) })
+        .unwrap_or_else(|| unsafe { window_scale(hwnd) });
+    wanted.min(largest_fitting_scale())
 }
 
 const RUN_KEY: Pcwstr = windows_sys::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -589,6 +600,8 @@ struct Desktop {
     buffer: Cell<BackBuffer>,
     /// Control currently under the pointer, for hover styling.
     hot: Cell<HWND>,
+    /// True when an edit field differs from what is saved, so Apply can stand out.
+    dirty: Cell<bool>,
     /// Everything that can have a custom picture: contract types, then ships.
     targets: Vec<Target>,
     /// Index into `targets` shown on the Images page.
@@ -928,6 +941,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             field: Cell::new(CreateSolidBrush(initial_theme.field)),
             buffer: Cell::new(BackBuffer::EMPTY),
             hot: Cell::new(null_mut()),
+            dirty: Cell::new(false),
             targets: targets(),
             target: Cell::new(0),
             image_page: Cell::new(0),
@@ -1368,7 +1382,7 @@ fn toggle_detail(id: i32) -> &'static str {
         ART => "Ship and location pictures from the wiki",
         ENABLED => "Publish live presence to Discord",
         STARTUP => "Start minimised in the tray",
-        UPDATES => "Daily GitHub release check",
+        UPDATES => "Checked at startup and every 30 minutes",
         _ => "",
     }
 }
@@ -1400,9 +1414,15 @@ fn choice_rect(top: i32, index: usize) -> RECT {
     rect(LEFT + column * 73, top + 74 + row * 73, 66, 66)
 }
 
-/// "Your own link" field below the picture grid.
-fn link_frame(top: i32) -> RECT {
-    rect(LEFT, top + 296, RIGHT - LEFT - 128, 32)
+/// "Your own link" field below the picture grid; `rows` is the visible tile rows.
+fn link_frame(top: i32, rows: i32) -> RECT {
+    rect(LEFT, top + 74 + rows * 73 + 14, RIGHT - LEFT - 128, 32)
+}
+
+/// Tile rows the Images page needs for the current page of pictures.
+fn image_rows(desktop: &Desktop) -> i32 {
+    let (_, visible) = desktop.visible_choices();
+    (visible.len().div_ceil(9) as i32).max(1)
 }
 
 fn buttons_box(top: i32) -> RECT {
@@ -1414,7 +1434,7 @@ fn updates_hero(top: i32) -> RECT {
 }
 
 /// Field frames drawn behind EDIT controls: (id, frame).
-fn fields(page: usize, top: i32) -> Vec<(i32, RECT)> {
+fn fields(page: usize, top: i32, image_rows: i32) -> Vec<(i32, RECT)> {
     match page {
         ACTIVITY => [(2, GAME_NAME), (3, DETAILS), (4, CUSTOM)]
             .into_iter()
@@ -1431,14 +1451,14 @@ fn fields(page: usize, top: i32) -> Vec<(i32, RECT)> {
                 )
             })
             .collect(),
-        IMAGES => vec![(IMAGE_LINK, link_frame(top))],
+        IMAGES => vec![(IMAGE_LINK, link_frame(top, image_rows))],
         BUTTONS => {
             let b = buttons_box(top);
             LINK_FIELDS
                 .into_iter()
                 .enumerate()
                 .flat_map(|(i, (label, url))| {
-                    let y = 44 + i as i32 * 58;
+                    let y = 32 + i as i32 * 72;
                     [
                         (label, at(b, 14, y, 200, 32)),
                         (
@@ -1560,7 +1580,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
                 choice_rect(top, index),
             );
         }
-        let link = link_frame(top);
+        let link = link_frame(top, image_rows(desktop));
         place(
             hwnd,
             USE_LINK,
@@ -1569,7 +1589,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
         );
         // Appearance page.
         for index in 0..THEMES.len() {
-            let (w, gap) = (158, 11);
+            let (w, gap) = (156, 10);
             place(
                 hwnd,
                 THEME_BTN + index as i32,
@@ -1578,7 +1598,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             );
         }
         for index in 0..ACCENTS.len() {
-            let (w, gap) = (104, 8);
+            let (w, gap) = (102, 9);
             place(
                 hwnd,
                 ACCENT_BTN + index as i32,
@@ -1587,7 +1607,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             );
         }
         for index in 0..2 {
-            let (w, gap) = (158, 11);
+            let (w, gap) = (156, 10);
             place(
                 hwnd,
                 CORNER_BTN + index,
@@ -1629,7 +1649,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
         for id in [GAME_NAME, DETAILS, CUSTOM, IMAGE_LINK, 121, 122, 123, 124] {
             place(hwnd, id, false, hidden);
         }
-        for (id, frame) in fields(page, top) {
+        for (id, frame) in fields(page, top, image_rows(desktop)) {
             place(
                 hwnd,
                 id,
@@ -1727,8 +1747,8 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
                 id,
             );
             SetWindowTheme(handle, windows_sys::w!("DarkMode_CFD"), null_mut());
-            SendMessageW(handle, CB_SETITEMHEIGHT, usize::MAX, 24);
-            SendMessageW(handle, CB_SETITEMHEIGHT, 0, 28);
+            SendMessageW(handle, CB_SETITEMHEIGHT, usize::MAX, s(24) as isize);
+            SendMessageW(handle, CB_SETITEMHEIGHT, 0, s(28) as isize);
             SetWindowSubclass(handle, Some(paint_combo), 2, body as usize);
             handle
         };
@@ -2011,6 +2031,15 @@ impl Liveness {
             Self::Waiting => "Waiting for game",
         }
     }
+
+    /// Compact form for the rail and the monitor card.
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Live => "Connected",
+            Self::Paused => "Paused",
+            Self::Waiting => "Waiting",
+        }
+    }
 }
 
 fn liveness(desktop: &Desktop) -> Liveness {
@@ -2051,7 +2080,7 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
         paint_card(dc, hwnd, desktop, card_top(banner));
         let top = page_top(banner);
         paint_page(dc, desktop, top);
-        for (_, frame) in fields(desktop.page.get(), top) {
+        for (_, frame) in fields(desktop.page.get(), top, image_rows(desktop)) {
             shape(dc, frame, t.button_radius, t.field, Some(t.field_border));
             line(
                 dc,
@@ -2062,7 +2091,15 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
                 t.field_bottom,
             );
         }
-        // Footer.
+        // Footer. A dark crease above the rule makes it read as a physical seam.
+        line(
+            dc,
+            s(RAIL_WIDTH + 1),
+            s(FOOTER_TOP - 1),
+            s(CLIENT_WIDTH),
+            s(FOOTER_TOP),
+            mix(t.canvas, rgb(0, 0, 0), 0.55),
+        );
         fill(
             dc,
             rect(
@@ -2075,12 +2112,29 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
         );
         line(
             dc,
-            RAIL_WIDTH + 1,
-            FOOTER_TOP,
-            CLIENT_WIDTH,
-            FOOTER_TOP + 1,
+            s(RAIL_WIDTH + 1),
+            s(FOOTER_TOP),
+            s(CLIENT_WIDTH),
+            s(FOOTER_TOP) + 1,
             t.rail_line,
         );
+        let hint = match desktop.page.get() {
+            ACTIVITY => "Dropdowns save instantly · text fields need Apply",
+            BUTTONS => "Text fields and links need Apply",
+            IMAGES => "Uploaded pictures are resized and public",
+            _ => "",
+        };
+        if !hint.is_empty() {
+            let f = desktop.fonts();
+            text(
+                dc,
+                hint,
+                rect(LEFT + 98, FOOTER_Y, 340, BUTTON_HEIGHT),
+                f.small,
+                MUTED,
+                LEFT_LINE,
+            );
+        }
 
         BitBlt(target, 0, 0, width, height, dc, 0, 0, SRCCOPY);
         EndPaint(hwnd, &ps);
@@ -2117,7 +2171,7 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
         text(
             dc,
             "Star Citizen",
-            rect(58, 14, 132, 18),
+            rect(58, 16, 132, 18),
             f.brand,
             TEXT,
             LEFT_LINE,
@@ -2125,30 +2179,23 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
         text(
             dc,
             "Rich Presence",
-            rect(58, 33, 132, 14),
+            rect(58, 34, 132, 14),
             f.tiny,
             MUTED,
             LEFT_LINE,
         );
-        fade_line(
-            dc,
-            s(16),
-            s(190),
-            64,
-            mix(t.accent, t.rail, 0.30),
-            t.divider,
-        );
+        fade_line(dc, s(16), s(190), 64, mix(t.accent, t.rail, 0.30), t.rail);
 
         // Status footer: halo dot, label, version.
         let live = liveness(desktop);
         let (tone, label) = match live {
-            Liveness::Live => (LIVE, "Connected"),
-            Liveness::Paused => (PAUSED, "Paused"),
-            Liveness::Waiting => (MUTED, "Waiting"),
+            Liveness::Live => (LIVE, live.short_label()),
+            Liveness::Paused => (PAUSED, live.short_label()),
+            Liveness::Waiting => (MUTED, live.short_label()),
         };
         line(
             dc,
-            s(16),
+            0,
             s(FOOTER_TOP),
             s(RAIL_WIDTH),
             s(FOOTER_TOP + 1),
@@ -2198,10 +2245,12 @@ unsafe fn fade_line(dc: HDC, x1: i32, x2: i32, y: i32, from: u32, to: u32) {
 /// Soft drop shadow: a few offset rounded rectangles under a raised surface.
 unsafe fn shadow(dc: HDC, t: Theme, r: RECT, radius: i32) {
     unsafe {
-        for (offset, weight) in [(4, 0.55), (2, 0.35), (1, 0.20)] {
+        for (offset, weight) in [(5, 0.14), (3, 0.28), (1, 0.45)] {
             let mut layer = r;
             layer.top += s(offset);
             layer.bottom += s(offset);
+            layer.left += s(offset / 2);
+            layer.right -= s(offset / 2);
             shape(dc, layer, radius, mix(t.canvas, rgb(0, 0, 0), weight), None);
         }
     }
@@ -2239,7 +2288,7 @@ unsafe fn paint_banner(dc: HDC, desktop: &Desktop) {
                 right: r.left + s(28),
                 bottom: r.top + s(26),
             },
-            f.glyph,
+            f.glyph_small,
             ON_ACCENT,
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -2285,6 +2334,13 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
         let height = card_height(desktop.banner.get());
         let r = rect(LEFT, top, RIGHT - LEFT, height);
         let radius = t.tile_radius + 4;
+        let compact = height < 100;
+        // Text rows hug the artwork: 82 px art in full height, 74 px when compact.
+        let (verb_y, title_y, state_y, meta_y) = if compact {
+            (8, 22, 44, 66)
+        } else {
+            (12, 30, 56, 78)
+        };
 
         shadow(dc, t, r, radius);
         surface(dc, r, radius, t.card, t.card_border);
@@ -2317,7 +2373,13 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                     right: ax + s(size),
                     bottom: ay + s(size),
                 };
-                shape(dc, well, 8, t.field, Some(t.field_border));
+                shape(
+                    dc,
+                    well,
+                    8,
+                    mix(t.card, t.accent, 0.07),
+                    Some(lighten(t.card, 0.06)),
+                );
                 DrawIconEx(
                     dc,
                     ax + s(size / 2 - 16),
@@ -2369,8 +2431,8 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             Liveness::Waiting => (t.chip, t.tile_border, MUTED),
         };
         let label = live.label();
-        let pill_width = width_of(dc, label, f.tiny_semi) + s(34);
-        let pill_top = r.top + s(11);
+        let pill_width = width_of(dc, label, f.tiny_semi) + s(30);
+        let pill_top = r.top + s(verb_y - 1);
         let pill = RECT {
             left: text_right - pill_width,
             top: pill_top,
@@ -2381,8 +2443,8 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
         if live != Liveness::Waiting {
             circle(
                 dc,
-                pill.left + s(7),
-                pill.top + s(6),
+                pill.left + s(6),
+                pill.top + s(5),
                 s(12),
                 mix(pill_fill, pill_text, 0.22),
             );
@@ -2392,7 +2454,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             dc,
             label,
             RECT {
-                left: pill.left + s(21),
+                left: pill.left + s(20),
                 top: pill.top,
                 right: pill.right,
                 bottom: pill.bottom,
@@ -2404,9 +2466,9 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
 
         let verb_area = RECT {
             left: x,
-            top: r.top + s(12),
+            top: r.top + s(verb_y),
             right: pill.left - s(10),
-            bottom: r.top + s(30),
+            bottom: r.top + s(verb_y + 18),
         };
         kicker_text(
             dc,
@@ -2422,70 +2484,56 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
         );
 
         let text_width = text_right - x;
+        let title_area = RECT {
+            left: x,
+            top: r.top + s(title_y),
+            right: x + text_width,
+            bottom: r.top + s(title_y + 24),
+        };
+        let state_area = RECT {
+            left: x,
+            top: r.top + s(state_y),
+            right: x + text_width,
+            bottom: r.top + s(state_y + 18),
+        };
+        let meta_area = RECT {
+            left: x,
+            top: r.top + s(meta_y),
+            right: x + text_width,
+            bottom: r.top + s(meta_y + 18),
+        };
         match &card {
             Some(card) => {
-                text(
-                    dc,
-                    &card.details,
-                    RECT {
-                        left: x,
-                        top: r.top + s(30),
-                        right: x + text_width,
-                        bottom: r.top + s(54),
-                    },
-                    f.details,
-                    TEXT,
-                    LEFT_LINE,
-                );
-                text(
-                    dc,
-                    &card.state,
-                    RECT {
-                        left: x,
-                        top: r.top + s(56),
-                        right: x + text_width,
-                        bottom: r.top + s(74),
-                    },
-                    f.body,
-                    SOFT,
-                    LEFT_LINE,
-                );
+                text(dc, &card.details, title_area, f.details, TEXT, LEFT_LINE);
+                text(dc, &card.state, state_area, f.body, SOFT, LEFT_LINE);
                 let elapsed_text = elapsed(card.started);
                 text(
                     dc,
                     &elapsed_text,
-                    RECT {
-                        left: x,
-                        top: r.top + s(78),
-                        right: x + text_width,
-                        bottom: r.top + s(96),
-                    },
+                    meta_area,
                     f.mono,
                     if live == Liveness::Live { LIVE } else { MUTED },
                     LEFT_LINE,
                 );
-                if !card.large_text.is_empty() && card.large_text != "Star Citizen" {
-                    let offset = width_of(dc, &elapsed_text, f.mono) + s(14);
-                    line(
-                        dc,
-                        x + offset - s(8),
-                        r.top + s(82),
-                        x + offset - s(7),
-                        r.top + s(93),
-                        t.divider,
-                    );
+                // Channel chip after the timer: context without repeating the ship.
+                let channel = desktop.base.channel.to_uppercase();
+                let offset = width_of(dc, &elapsed_text, f.mono) + s(12);
+                if !channel.is_empty() {
+                    let width = width_of(dc, &channel, f.tiny_semi) + s(16);
+                    let chip_rect = RECT {
+                        left: x + offset,
+                        top: r.top + s(meta_y + 1),
+                        right: x + offset + width,
+                        bottom: r.top + s(meta_y + 17),
+                    };
+                    shape(dc, chip_rect, 4, t.chip, Some(t.tile_border));
                     text(
                         dc,
-                        &card.large_text,
-                        RECT {
-                            left: x + offset,
-                            top: r.top + s(78),
-                            right: x + text_width,
-                            bottom: r.top + s(96),
-                        },
-                        f.small,
+                        &channel,
+                        chip_rect,
+                        f.tiny_semi,
                         MUTED,
-                        LEFT_LINE,
+                        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
                     );
                 }
             }
@@ -2493,12 +2541,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     "Nothing on your card yet",
-                    RECT {
-                        left: x,
-                        top: r.top + s(30),
-                        right: x + text_width,
-                        bottom: r.top + s(54),
-                    },
+                    title_area,
                     f.details,
                     TEXT,
                     LEFT_LINE,
@@ -2506,12 +2549,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     "Your live card appears here and on Discord once Star Citizen is running.",
-                    RECT {
-                        left: x,
-                        top: r.top + s(56),
-                        right: x + text_width,
-                        bottom: r.top + s(74),
-                    },
+                    state_area,
                     f.body,
                     SOFT,
                     LEFT_LINE,
@@ -2522,19 +2560,7 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                 } else {
                     status
                 };
-                text(
-                    dc,
-                    &line,
-                    RECT {
-                        left: x,
-                        top: r.top + s(78),
-                        right: x + text_width,
-                        bottom: r.top + s(96),
-                    },
-                    f.small,
-                    MUTED,
-                    LEFT_LINE,
-                );
+                text(dc, &line, meta_area, f.small, MUTED, LEFT_LINE);
             }
         }
     }
@@ -2583,13 +2609,13 @@ unsafe fn section_kicker(dc: HDC, desktop: &Desktop, top: i32, label: &str) {
             MUTED,
             LEFT_LINE,
         );
-        line(
+        fade_line(
             dc,
             measured.right + s(10),
-            s(top + 7),
             s(RIGHT),
-            s(top + 8),
+            top + 7,
             t.divider,
+            t.canvas,
         );
     }
 }
@@ -2680,12 +2706,11 @@ unsafe fn chip(
 /// Fluent-style switch track and knob at `(x, y)`, 40 × 20 logical pixels.
 unsafe fn switch(dc: HDC, t: Theme, x: i32, y: i32, on: bool, enabled: bool) {
     unsafe {
-        let track = rect(0, 0, 40, 20);
         let track = RECT {
             left: x,
             top: y,
-            right: x + (track.right - track.left),
-            bottom: y + (track.bottom - track.top),
+            right: x + s(40),
+            bottom: y + s(20),
         };
         if on {
             shape(
@@ -3022,16 +3047,25 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     "How Discord words your status",
                 );
                 section_kicker(dc, desktop, top + 34, "STATUS FORMAT");
+                let chosen = desktop
+                    .prefs
+                    .lock()
+                    .unwrap()
+                    .activity_type
+                    .clone()
+                    .unwrap_or_else(|| desktop.base.activity_type.clone());
+                let verb_label = VERBS
+                    .iter()
+                    .find(|(key, _)| *key == chosen)
+                    .map_or("Playing", |(_, label)| label);
+                let example =
+                    format!("The word before your status (e.g. {verb_label} Star Citizen)");
                 settings_group(
                     dc,
                     desktop,
                     rect(LEFT, top + 52, RIGHT - LEFT, 2 * GROUP_ROW_H),
                     &[
-                        (
-                            VERB,
-                            "Discord says",
-                            "The verb before your status (Playing Star Citizen)",
-                        ),
+                        (VERB, "Discord says", example.as_str()),
                         (
                             MEMBER_LIST,
                             "Member list shows",
@@ -3104,11 +3138,16 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                         LEFT_LINE,
                     );
                 }
-                let link = link_frame(top);
+                let link = link_frame(top, image_rows(desktop));
                 text(
                     dc,
                     "Click a picture to use it. Uploads are resized and hosted publicly so Discord can show them.",
-                    rect(LEFT, link.bottom + 10, RIGHT - LEFT, 32),
+                    RECT {
+                        left: s(LEFT),
+                        top: link.bottom + s(10),
+                        right: s(RIGHT),
+                        bottom: link.bottom + s(42),
+                    },
                     f.small,
                     MUTED,
                     DT_LEFT | DT_WORDBREAK,
@@ -3224,13 +3263,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 sample_strip(dc, desktop, rect(LEFT, top + 280, RIGHT - LEFT, 56));
             }
             _ => {
-                page_header(
-                    dc,
-                    desktop,
-                    top,
-                    "Updates",
-                    &format!("Installed v{}", env!("CARGO_PKG_VERSION")),
-                );
+                page_header(dc, desktop, top, "Updates", "");
                 let state = desktop.update.lock().unwrap().clone();
                 let hero = updates_hero(top);
                 surface(dc, hero, t.tile_radius + 2, t.tile, t.tile_border);
@@ -3238,11 +3271,11 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     UpdateState::Idle => (
                         MUTED,
                         "\u{E895}",
-                        "Updates".to_string(),
+                        "Not checked yet".to_string(),
                         if desktop.base.check_for_updates {
-                            "Not checked yet."
+                            "Checks run at startup and every 30 minutes."
                         } else {
-                            "Turned off in scrp.toml (check_for_updates = false)."
+                            "Update checks are turned off."
                         }
                         .to_string(),
                     ),
@@ -3328,7 +3361,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                         (
                             "Update checks",
                             if desktop.base.check_for_updates {
-                                "Startup & daily"
+                                "Startup · every 30 min"
                             } else {
                                 "Off in scrp.toml"
                             },
@@ -3350,9 +3383,9 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 surface(dc, monitor, t.tile_radius + 2, t.tile, t.tile_border);
                 let live = liveness(desktop);
                 let (tone, label) = match live {
-                    Liveness::Live => (LIVE, "Connected to Discord"),
-                    Liveness::Paused => (PAUSED, "Sharing paused"),
-                    Liveness::Waiting => (MUTED, "Waiting for Star Citizen"),
+                    Liveness::Live => (LIVE, "Connected"),
+                    Liveness::Paused => (PAUSED, "Paused"),
+                    Liveness::Waiting => (MUTED, "Waiting"),
                 };
                 circle(dc, monitor.left + s(16), monitor.top + s(16), s(10), tone);
                 text(
@@ -3403,7 +3436,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     &format!(
-                        "Polling every {}s · pushing every {}s · preferences.toml",
+                        "Reading Game.log · polling every {}s · pushing every {}s",
                         desktop.base.poll_seconds, desktop.base.update_seconds
                     ),
                     at(monitor, 16, 62, RIGHT - LEFT - 32, 16),
@@ -3416,12 +3449,11 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
     }
 }
 /// Background behind an owner-drawn button, so its rounded corners blend in.
-fn behind(id: i32, t: Theme, banner_bottom: i32, y: i32) -> u32 {
+fn behind(id: i32, t: Theme, in_banner: bool) -> u32 {
     match id {
         HIDE | SAVE | EXIT => t.footer,
         n if (NAV..NAV + PAGES.len() as i32).contains(&n) => t.rail,
-        UPDATE_NOW | RELEASE_NOTES if y < banner_bottom => t.banner,
-        UPDATE_ACTION | UPDATE_NOTES => t.tile,
+        UPDATE_NOW | RELEASE_NOTES if in_banner => t.banner,
         _ => t.canvas,
     }
 }
@@ -3595,11 +3627,7 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
         let dc = item.hDC;
         let r = item.rcItem;
         let pressed = item.itemState & ODS_SELECTED != 0;
-        fill(
-            dc,
-            r,
-            behind(id, t, 50, if desktop.banner.get() { 20 } else { 999 }),
-        );
+        fill(dc, r, behind(id, t, desktop.banner.get()));
         let mut label = [0u16; 64];
         let len = GetWindowTextW(item.hwndItem, label.as_mut_ptr(), label.len() as i32);
         let label = String::from_utf16_lossy(&label[..len as usize]);
@@ -3632,19 +3660,19 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             // Mini window swatch: canvas, rail, a tile and the accent.
             let sw = at(r, 12, 14, 40, 40);
             shape(dc, sw, 4, canvas_c, Some(t.tile_border));
-            shape(dc, at(sw, 0, 0, 12, 40), 3, rail_c, None);
+            shape(dc, at(sw, 1, 1, 11, 38), 3, rail_c, None);
             shape(dc, at(sw, 16, 8, 20, 10), 2, tile_c, None);
             shape(dc, at(sw, 16, 22, 12, 8), 2, t.accent, None);
             text(
                 dc,
                 name,
-                at(r, 62, 22, RIGHT - LEFT - 200, 18),
+                at(r, 62, 0, RIGHT - LEFT - 200, 68),
                 if selected { f.body_semi } else { f.body },
                 if selected || hot { TEXT } else { SOFT },
                 LEFT_LINE,
             );
             if selected {
-                let check = at(r, 124, 26, 18, 18);
+                let check = at(r, 122, 26, 18, 18);
                 shape(dc, check, 9, t.accent, None);
                 text(
                     dc,
@@ -3724,11 +3752,16 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 Mask::Rounded(t.tile_radius.max(2) as u32)
             };
             let picture = desktop.choices().get(index).and_then(|url| {
+                let inset = if desktop.selected_choice() == Some(index) {
+                    3
+                } else {
+                    2
+                };
                 want_thumbnail(
                     desktop,
                     GetParent(item.hwndItem),
                     url,
-                    (w as u32 - 4, h as u32 - 4),
+                    (w as u32 - inset * 2, h as u32 - inset * 2),
                     mask,
                 )
             });
@@ -3877,7 +3910,9 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             let disabled = item.itemState & ODS_DISABLED != 0;
             let hot = desktop.hot.get() == item.hwndItem && !disabled;
             let available = matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_));
-            let primary = id == SAVE || id == UPDATE_NOW || (id == UPDATE_ACTION && available);
+            let primary = (id == SAVE && desktop.dirty.get())
+                || id == UPDATE_NOW
+                || (id == UPDATE_ACTION && available);
             if primary {
                 let fill = if disabled {
                     mix(t.tile, t.accent, 0.28)
@@ -3898,26 +3933,31 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                     center,
                 );
             } else if id == EXIT {
-                if hot || pressed {
-                    shape(
-                        dc,
-                        r,
-                        t.button_radius,
-                        if pressed {
-                            t.tile_pressed
-                        } else {
-                            t.tile_hover
-                        },
-                        None,
-                    );
-                }
+                shape(
+                    dc,
+                    r,
+                    t.button_radius,
+                    if pressed {
+                        t.tile_pressed
+                    } else if hot {
+                        t.tile_hover
+                    } else {
+                        t.footer
+                    },
+                    Some(if hot { t.field_bottom } else { t.tile_border }),
+                );
                 text(
                     dc,
                     &label,
-                    r,
+                    RECT {
+                        left: r.left + s(12),
+                        top: r.top,
+                        right: r.right,
+                        bottom: r.bottom,
+                    },
                     f.body_semi,
-                    if hot { TEXT } else { SOFT },
-                    center,
+                    if hot { TEXT } else { MUTED },
+                    LEFT_LINE,
                 );
             } else {
                 let fill = if disabled {
@@ -3957,30 +3997,50 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             && desktop.hot.get() != item.hwndItem
             && !(CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id)
         {
-            let ring = RECT {
-                left: r.left + s(2),
-                top: r.top + s(2),
-                right: r.right - s(2),
-                bottom: r.bottom - s(2),
-            };
-            shape(dc, ring, t.button_radius, t.accent, None);
-            shape(
-                dc,
-                RECT {
-                    left: r.left + s(3),
-                    top: r.top + s(3),
-                    right: r.right - s(3),
-                    bottom: r.bottom - s(3),
-                },
-                t.button_radius,
-                t.canvas,
-                None,
-            );
+            focus_frame(dc, r, t.accent);
         }
     }
 }
 
 /// Toggle tile: label on the left, Fluent switch on the right.
+/// Two-pixel focus frame drawn along the inside edge; never paints over the content.
+unsafe fn focus_frame(dc: HDC, r: RECT, color: u32) {
+    unsafe {
+        let edge = s(2);
+        let inset = s(2);
+        let (left, top) = (r.left + inset, r.top + inset);
+        let (right, bottom) = (r.right - inset, r.bottom - inset);
+        for frame in [
+            RECT {
+                left,
+                top,
+                right,
+                bottom: top + edge,
+            },
+            RECT {
+                left,
+                top: bottom - edge,
+                right,
+                bottom,
+            },
+            RECT {
+                left,
+                top,
+                right: left + edge,
+                bottom,
+            },
+            RECT {
+                left: right - edge,
+                top,
+                right,
+                bottom,
+            },
+        ] {
+            fill(dc, frame, color);
+        }
+    }
+}
+
 unsafe extern "system" fn paint_toggle(
     hwnd: HWND,
     msg: u32,
@@ -4097,25 +4157,7 @@ unsafe extern "system" fn paint_toggle(
         switch(dc, t, r.right - s(54), r.top + s(11), on, enabled);
 
         if SendMessageW(hwnd, BM_GETSTATE, 0, 0) & BST_FOCUS as isize != 0 && !hovered {
-            let ring = RECT {
-                left: r.left + s(1),
-                top: r.top + s(1),
-                right: r.right - s(1),
-                bottom: r.bottom - s(1),
-            };
-            shape(dc, ring, t.tile_radius, t.accent, None);
-            shape(
-                dc,
-                RECT {
-                    left: r.left + s(2),
-                    top: r.top + s(2),
-                    right: r.right - s(2),
-                    bottom: r.bottom - s(2),
-                },
-                t.tile_radius,
-                fill_color,
-                None,
-            );
+            focus_frame(dc, r, t.accent);
         }
         EndPaint(hwnd, &paint);
         0
@@ -4381,6 +4423,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             WM_COMMAND => {
                 let id = (w & 0xffff) as i32;
                 let code = ((w >> 16) & 0xffff) as u32;
+                if code == EN_CHANGE
+                    && (matches!(id, GAME_NAME | DETAILS | CUSTOM)
+                        || LINK_FIELDS
+                            .iter()
+                            .any(|&(label, url)| id == label || id == url))
+                {
+                    let dirty = edits_dirty(hwnd, desktop);
+                    if dirty != desktop.dirty.get() {
+                        desktop.dirty.set(dirty);
+                        InvalidateRect(GetDlgItem(hwnd, SAVE), null_mut(), 0);
+                    }
+                    return 0;
+                }
                 match id {
                     EXIT => {
                         DestroyWindow(hwnd);
@@ -4552,6 +4607,29 @@ unsafe fn read_text(hwnd: HWND, id: i32) -> String {
         String::from_utf16_lossy(&text[..len as usize])
             .trim()
             .to_owned()
+    }
+}
+
+/// True when any editable text field differs from the saved preferences.
+unsafe fn edits_dirty(hwnd: HWND, desktop: &Desktop) -> bool {
+    unsafe {
+        let prefs = desktop.prefs.lock().unwrap();
+        if read_text(hwnd, GAME_NAME) != prefs.game_name.trim()
+            || read_text(hwnd, DETAILS) != prefs.details.trim()
+            || read_text(hwnd, CUSTOM) != prefs.custom.trim()
+        {
+            return true;
+        }
+        let buttons = prefs.buttons.as_deref().unwrap_or(&[]);
+        for (index, (label, url)) in LINK_FIELDS.into_iter().enumerate() {
+            let saved = buttons.get(index);
+            let (saved_label, saved_url) =
+                saved.map_or(("", ""), |b| (b.label.trim(), b.url.trim()));
+            if read_text(hwnd, label) != saved_label || read_text(hwnd, url) != saved_url {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -4790,7 +4868,12 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
             accent: old.accent.clone(),
             sharp_corners: old.sharp_corners,
         };
-        if !commit(desktop, next) && id != SAVE {
+        let saved = commit(desktop, next);
+        if id == SAVE && saved {
+            desktop.dirty.set(false);
+            InvalidateRect(GetDlgItem(hwnd, SAVE), null_mut(), 0);
+        }
+        if !saved && id != SAVE {
             let previous = match id {
                 ENABLED => old.enabled,
                 LOCATION => old.location,

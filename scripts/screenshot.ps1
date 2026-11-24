@@ -11,7 +11,9 @@ param(
     # Combobox control id to open before capturing.
     [int]$DropId = 0,
     # Number of forced full repaints to time (performance check, no screenshot).
-    [int]$BenchPaints = 0
+    [int]$BenchPaints = 0,
+    # "id:text" to write into a control before capturing (e.g. 119:hello).
+    [string]$SetText = ""
 )
 
 Add-Type -AssemblyName System.Drawing
@@ -124,6 +126,15 @@ if ($BenchPaints -gt 0) {
     Write-Output ("{0}: {1} repaints in {2} ms = {3} ms per paint" -f $hwnd, $BenchPaints, [math]::Round($sw.Elapsed.TotalMilliseconds, 1), $per)
     if (-not $KeepOpen -and $proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
     exit 0
+}
+
+if ($SetText) {
+    $parts = $SetText.Split(":", 2)
+    $target = [Win]::GetDlgItem($hwnd, [int]$parts[0])
+    if ($target -ne [IntPtr]::Zero -and $parts.Count -eq 2) {
+        [void][Win]::SendMessageW($target, 0x000C, [IntPtr]::Zero, [System.Runtime.InteropServices.Marshal]::StringToHGlobalUni($parts[1]))
+        Start-Sleep -Milliseconds 300
+    }
 }
 
 $r = New-Object Win+RECT
