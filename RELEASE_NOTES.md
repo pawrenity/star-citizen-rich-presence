@@ -22,6 +22,9 @@
 - **Smaller fixes.** The Images grid now fits nine square previews per row, selected pictures use an accent
   ring plus a check badge instead of a solid colour slab, pressed picture tiles no longer flash a negative
   image, and keyboard focus draws a rounded accent ring instead of the old dotted rectangle.
+- **New app icon.** The muddy purple star is gone: an "orbital presence beacon" (bold four-point star in an
+  open sky-blue orbit with an emerald online dot, on a dark navy tile) stays legible from 16 px in the title
+  bar to 256 px in Explorer. It is generated from `assets/scrp-logo.svg` by `scripts/build-icon.ps1`.
 - **Accessibility.** Secondary text now clears WCAG AA at 11–13 px on every theme, disabled states are
   distinct from enabled ones, and the status colours (live / paused / error) no longer borrow your accent.
 

@@ -122,6 +122,12 @@ control (`-HoverId`), opens a dropdown (`-DropId`) and captures the window with
 `SCRP_DEMO=1` seeds a fake live presence and `SCRP_DEMO_BANNER=1` shows the update banner,
 so the populated states can be reviewed without launching Star Citizen.
 
+`scripts/build-icon.ps1` renders `assets/scrp-logo.svg` with headless Chrome at nine sizes
+(16–256) and packs them into `assets/scrp.ico` as 32-bit BMP entries, which Explorer, the
+taskbar, Inno Setup and .NET all read (PNG-compressed entries are not read by older
+loaders). `scripts/verify-icon.ps1` loads every size back through `System.Drawing.Icon` and
+writes a 4× contact sheet, which is how the 16 px legibility was checked.
+
 ## Known local-only warning
 
 The GNU (mingw) toolchain prints `.rsrc merge failure: multiple non-default manifests`
