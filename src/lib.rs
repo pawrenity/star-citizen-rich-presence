@@ -7,6 +7,7 @@ pub mod net;
 pub mod parser;
 pub mod presence;
 pub mod session;
+pub mod shapes;
 pub mod tail;
 pub mod thumbnail;
 pub mod update;
