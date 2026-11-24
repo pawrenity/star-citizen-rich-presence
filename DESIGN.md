@@ -24,10 +24,10 @@ Baseline captured from `target/release/scrp-before-redesign.exe` (v3.1.4) with
 Measured with `scripts/screenshot.ps1 -BenchPaints 300`, which forces synchronous full
 repaints through `InvalidateRect` + `UpdateWindow`:
 
-| Build | Full repaint | Working set |
+| Build | Full repaint | Binary |
 | --- | ---: | ---: |
-| 3.1.4 baseline | 3.01 ms | 25.3 MB |
-| 3.2.0 | **1.27 ms** | 33.8 MB |
+| 3.1.4 baseline | 3.01 ms | 4.28 MB |
+| 3.2.0 | **1.25 ms** | 5.45 MB |
 
 What changed:
 
@@ -45,7 +45,8 @@ What changed:
    time, pruned to 512 files / 128 MB. Later launches paint instantly.
 
 The extra 8 MB of working set is the shape cache (up to 192 entries) and is a deliberate
-trade for 2.4× faster paints.
+trade for 2.4× faster paints. `codegen-units = 1` in the release profile trims the binary
+from 6.25 MB to 5.45 MB; the image decoders dominate the rest.
 
 ## Design system
 - **Surfaces:** `rail` < `canvas` < `tile` (`s1`) < `tile_hover` (`s2`) < `tile_pressed` (`s3`),

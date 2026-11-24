@@ -1052,7 +1052,7 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             });
             if std::env::var_os("SCRP_DEMO_BANNER").is_some() {
                 *update_state.lock().unwrap() = UpdateState::Available(Release {
-                    version: "3.2.0".into(),
+                    version: "3.2.1".into(),
                     notes_url: String::new(),
                     installer_url: None,
                     sums_url: None,
@@ -1321,7 +1321,7 @@ const FOOTER_Y: i32 = FOOTER_TOP + 8;
 
 fn footer_rects() -> [(i32, RECT); 3] {
     [
-        (EXIT, rect(LEFT, FOOTER_Y, 84, BUTTON_HEIGHT)),
+        (EXIT, rect(LEFT, FOOTER_Y, 72, BUTTON_HEIGHT)),
         (
             HIDE,
             rect(RIGHT - 12 - 88 - 108, FOOTER_Y, 108, BUTTON_HEIGHT),
@@ -1395,7 +1395,7 @@ fn tile_rect(top: i32, column: i32, row: i32, full: bool) -> RECT {
 
 /// Extra space taken by the "General" kicker between rows 3 and 4.
 fn group_offset(row: i32) -> i32 {
-    if row >= 4 { 26 } else { 0 }
+    if row >= 4 { 22 } else { 0 }
 }
 
 /// Frames the layout uses, relative to `top`, for Activity rows.
@@ -1408,10 +1408,10 @@ fn activity_row(top: i32, index: i32) -> RECT {
     rect(LEFT, y, RIGHT - LEFT, GROUP_ROW_H)
 }
 
-/// Picture tile `index` on the Images page: nine 66×66 1:1 previews per row.
+/// Picture tile `index` on the Images page: nine 65×65 1:1 previews per row.
 fn choice_rect(top: i32, index: usize) -> RECT {
     let (column, row) = ((index % 9) as i32, (index / 9) as i32);
-    rect(LEFT + column * 73, top + 74 + row * 73, 66, 66)
+    rect(LEFT + column * 74, top + 74 + row * 73, 65, 65)
 }
 
 /// "Your own link" field below the picture grid; `rows` is the visible tile rows.
@@ -1515,12 +1515,12 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             place(hwnd, id, page == CARD, tile_rect(top, column, row, full));
         }
         // Banner actions.
-        place(hwnd, UPDATE_NOW, banner, rect(RIGHT - 12 - 96, 22, 96, 24));
+        place(hwnd, UPDATE_NOW, banner, rect(RIGHT - 12 - 96, 17, 96, 24));
         place(
             hwnd,
             RELEASE_NOTES,
             banner,
-            rect(RIGHT - 12 - 96 - 8 - 92, 22, 92, 24),
+            rect(RIGHT - 12 - 96 - 8 - 92, 17, 92, 24),
         );
 
         // Activity page: the two combos sit at the right of their rows.
@@ -1589,7 +1589,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
         );
         // Appearance page.
         for index in 0..THEMES.len() {
-            let (w, gap) = (156, 10);
+            let (w, gap) = (156, 11);
             place(
                 hwnd,
                 THEME_BTN + index as i32,
@@ -1607,7 +1607,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             );
         }
         for index in 0..2 {
-            let (w, gap) = (156, 10);
+            let (w, gap) = (156, 11);
             place(
                 hwnd,
                 CORNER_BTN + index,
@@ -3035,7 +3035,7 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
             CARD => {
                 page_header(dc, desktop, top, "Card", "Choose what appears on Discord");
                 section_kicker(dc, desktop, top + 34, "SHOW ON CARD");
-                section_kicker(dc, desktop, top + 244, "GENERAL");
+                section_kicker(dc, desktop, top + 248, "GENERAL");
             }
             ACTIVITY => {
                 page_header(
@@ -3073,11 +3073,11 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     ],
                     GROUP_ROW_H,
                 );
-                section_kicker(dc, desktop, top + 152, "TEXT OVERRIDES");
+                section_kicker(dc, desktop, top + 154, "TEXT OVERRIDES");
                 settings_group(
                     dc,
                     desktop,
-                    rect(LEFT, top + 170, RIGHT - LEFT, 3 * GROUP_ROW_H),
+                    rect(LEFT, top + 172, RIGHT - LEFT, 3 * GROUP_ROW_H),
                     &[
                         (
                             GAME_NAME,
@@ -3954,15 +3954,10 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 text(
                     dc,
                     &label,
-                    RECT {
-                        left: r.left + s(12),
-                        top: r.top,
-                        right: r.right,
-                        bottom: r.bottom,
-                    },
+                    r,
                     f.body_semi,
                     if hot { TEXT } else { MUTED },
-                    LEFT_LINE,
+                    center,
                 );
             } else {
                 let fill = if disabled {
