@@ -14,7 +14,10 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     ptr::null_mut,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicI32, Ordering},
+    },
 };
 use windows_sys::Win32::{
     Foundation::*,
@@ -22,13 +25,25 @@ use windows_sys::Win32::{
     System::{LibraryLoader::*, Registry::*, Threading::*},
     UI::{
         Controls::{Dialogs::*, *},
-        Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
+        HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
+            SetProcessDpiAwarenessContext,
+        },
+        Input::KeyboardAndMouse::{
+            EnableWindow, IsWindowEnabled, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+        },
         Shell::*,
         WindowsAndMessaging::*,
     },
 };
 
 type Pcwstr = *const u16;
+
+thread_local! {
+    /// Rasterised rounded rectangles and circles, reused across repaints.
+    static SHAPES: std::cell::RefCell<star_citizen_rich_presence::shapes::ShapeCache> =
+        std::cell::RefCell::new(star_citizen_rich_presence::shapes::ShapeCache::new(192));
+}
 
 const TRAY: u32 = WM_APP + 1;
 /// Posted by background threads (artwork, update checks) to request a repaint.
@@ -82,6 +97,10 @@ const PAGES: [&str; 6] = [
     "Appearance",
     "Updates",
 ];
+/// Segoe MDL2 Assets glyphs for the rail: card, message, picture, link, colour, sync.
+const NAV_GLYPHS: [&str; 6] = [
+    "\u{E779}", "\u{E8BD}", "\u{E8B9}", "\u{E71B}", "\u{E790}", "\u{E895}",
+];
 const CARD: usize = 0;
 const ACTIVITY: usize = 1;
 const IMAGES: usize = 2;
@@ -93,33 +112,63 @@ const UPDATES_PAGE: usize = 5;
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
-const TEXT: u32 = rgb(0xf3, 0xf3, 0xf3);
-const HEADING: u32 = rgb(0xe6, 0xe6, 0xe6);
-const SOFT: u32 = rgb(0xc8, 0xc8, 0xc8);
-const STATE_TEXT: u32 = rgb(0xb4, 0xb4, 0xb4);
-const OFF_TEXT: u32 = rgb(0xa4, 0xa4, 0xa4);
-const MUTED: u32 = rgb(0x96, 0x96, 0x96);
-const FAINT: u32 = rgb(0x7c, 0x7c, 0x7c);
-const ON_ACCENT: u32 = rgb(0x11, 0x11, 0x11);
-const GREEN: u32 = rgb(0x6c, 0xcb, 0x5f);
+
+/// Primary text: 10.2:1 or better on every surface, in every theme.
+const TEXT: u32 = rgb(0xf2, 0xf2, 0xf4);
+/// Secondary text: 7.4:1 or better.
+const SOFT: u32 = rgb(0xc8, 0xc8, 0xce);
+/// Tertiary text and captions: 5:1 or better (was `FAINT`, which failed AA).
+const MUTED: u32 = rgb(0xa4, 0xa4, 0xae);
+/// Disabled text. Never use it for anything actionable.
+const DISABLED: u32 = rgb(0x75, 0x75, 0x7e);
+/// Ink on an accent fill.
+const ON_ACCENT: u32 = rgb(0x0d, 0x0d, 0x0f);
 const BANNER_TEXT: u32 = rgb(0xe8, 0xf3, 0xfb);
+
+/// Fixed semantic status colours. Never the user's accent.
+const LIVE: u32 = rgb(0x57, 0xd9, 0x87);
+const PAUSED: u32 = rgb(0xf5, 0xc5, 0x6b);
+const ERROR: u32 = rgb(0xff, 0x8a, 0x80);
+
+/// Linear blend of two `0x00BBGGRR` colours; `weight` 0.0 is `from`, 1.0 is `to`.
+fn mix(from: u32, to: u32, weight: f32) -> u32 {
+    let w = weight.clamp(0.0, 1.0);
+    let channel = |shift: u32| {
+        let a = ((from >> shift) & 0xff) as f32;
+        let b = ((to >> shift) & 0xff) as f32;
+        (a + (b - a) * w).round() as u32
+    };
+    channel(0) | channel(8) << 8 | channel(16) << 16
+}
+
+/// Lifts a colour towards white: used for hover states and top highlights.
+fn lighten(color: u32, amount: f32) -> u32 {
+    mix(color, 0xff_ff_ff, amount)
+}
 
 #[derive(Clone, Copy)]
 struct Theme {
     caption: u32,
     canvas: u32,
     rail: u32,
+    footer: u32,
     rail_line: u32,
     divider: u32,
     nav_selected: u32,
-    tile: u32,
-    tile_border: u32,
+    nav_hover: u32,
+    /// Hero card surface, one step above `tile`.
+    card: u32,
     card_border: u32,
+    tile: u32,
+    tile_hover: u32,
+    tile_pressed: u32,
+    tile_border: u32,
     field: u32,
     field_border: u32,
     field_bottom: u32,
-    footer: u32,
+    chip: u32,
     accent: u32,
+    accent_hover: u32,
     accent_pressed: u32,
     banner: u32,
     banner_border: u32,
@@ -127,163 +176,200 @@ struct Theme {
     button_radius: i32,
 }
 
+/// Swatch previews for the Appearance page: (key, label, canvas, rail, tile).
 const THEMES: [(&str, &str, u32, u32, u32); 4] = [
     (
         "obsidian",
         "Obsidian",
         rgb(0x20, 0x20, 0x20),
         rgb(0x1b, 0x1b, 0x1b),
-        rgb(0x27, 0x27, 0x27),
+        rgb(0x2b, 0x2b, 0x2b),
     ),
     (
         "midnight",
         "Midnight",
         rgb(0x14, 0x19, 0x23),
-        rgb(0x0f, 0x14, 0x1d),
-        rgb(0x1c, 0x23, 0x31),
+        rgb(0x0e, 0x13, 0x1b),
+        rgb(0x1d, 0x24, 0x33),
     ),
     (
         "pitch",
         "Pitch",
         rgb(0x0c, 0x0c, 0x0e),
         rgb(0x07, 0x07, 0x09),
-        rgb(0x15, 0x15, 0x19),
+        rgb(0x17, 0x17, 0x1b),
     ),
     (
         "slate",
         "Slate",
-        rgb(0x25, 0x26, 0x2b),
+        rgb(0x26, 0x27, 0x2c),
         rgb(0x1e, 0x1f, 0x24),
-        rgb(0x2e, 0x30, 0x37),
+        rgb(0x31, 0x32, 0x39),
     ),
 ];
 
-const ACCENTS: [(&str, &str, u32, u32); 6] = [
-    ("sky", "Sky", rgb(0x60, 0xcd, 0xff), rgb(0x4c, 0xb0, 0xe0)),
+/// (key, label, accent, hover, pressed).
+const ACCENTS: [(&str, &str, u32, u32, u32); 6] = [
+    (
+        "sky",
+        "Sky",
+        rgb(0x4c, 0xc2, 0xff),
+        rgb(0x70, 0xd2, 0xff),
+        rgb(0x32, 0xa6, 0xe3),
+    ),
     (
         "amber",
         "Amber",
-        rgb(0xf5, 0xb8, 0x41),
-        rgb(0xd4, 0x9b, 0x2b),
+        rgb(0xf2, 0xb3, 0x3d),
+        rgb(0xf6, 0xbf, 0x54),
+        rgb(0xd4, 0x96, 0x24),
     ),
     (
         "emerald",
         "Emerald",
-        rgb(0x5c, 0xe0, 0x8a),
-        rgb(0x42, 0xbe, 0x6e),
+        rgb(0x43, 0xd0, 0x7e),
+        rgb(0x6c, 0xe3, 0x96),
+        rgb(0x2e, 0xb2, 0x66),
     ),
     (
         "coral",
         "Coral",
-        rgb(0xff, 0x6b, 0x6b),
-        rgb(0xde, 0x52, 0x52),
+        rgb(0xf7, 0x6e, 0x6e),
+        rgb(0xff, 0x7a, 0x7a),
+        rgb(0xd9, 0x52, 0x52),
     ),
     (
         "violet",
         "Violet",
-        rgb(0xb5, 0x89, 0xff),
-        rgb(0x97, 0x6c, 0xe0),
+        rgb(0xa9, 0x7e, 0xff),
+        rgb(0xbc, 0x95, 0xff),
+        rgb(0x8e, 0x5f, 0xe8),
     ),
-    ("ice", "Ice", rgb(0xd8, 0xe4, 0xf0), rgb(0xb4, 0xc4, 0xd4)),
+    (
+        "ice",
+        "Ice",
+        rgb(0xd6, 0xe2, 0xee),
+        rgb(0xdc, 0xe7, 0xf2),
+        rgb(0xb4, 0xc6, 0xd8),
+    ),
 ];
 
 impl Theme {
     fn from_prefs(prefs: &Preferences) -> Self {
-        let (accent, accent_pressed) = ACCENTS
-            .iter()
-            .find(|(k, ..)| *k == prefs.accent)
-            .map_or((ACCENTS[0].2, ACCENTS[0].3), |(_, _, a, p)| (*a, *p));
+        let (accent, accent_hover, accent_pressed) =
+            ACCENTS.iter().find(|(k, ..)| *k == prefs.accent).map_or(
+                (ACCENTS[0].2, ACCENTS[0].3, ACCENTS[0].4),
+                |(_, _, a, h, p)| (*a, *h, *p),
+            );
         let (tile_radius, button_radius) = if prefs.sharp_corners { (2, 2) } else { (6, 5) };
-        match prefs.theme.as_str() {
-            "midnight" => Self {
-                caption: rgb(0x0d, 0x12, 0x1a),
-                canvas: rgb(0x14, 0x19, 0x23),
-                rail: rgb(0x0f, 0x14, 0x1d),
-                rail_line: rgb(0x22, 0x2c, 0x3d),
-                divider: rgb(0x1f, 0x28, 0x38),
-                nav_selected: rgb(0x21, 0x2a, 0x3b),
-                tile: rgb(0x1c, 0x23, 0x31),
-                tile_border: rgb(0x2a, 0x35, 0x48),
-                card_border: rgb(0x2d, 0x39, 0x4e),
-                field: rgb(0x11, 0x16, 0x20),
-                field_border: rgb(0x31, 0x3e, 0x54),
-                field_bottom: rgb(0x4a, 0x5d, 0x7a),
-                footer: rgb(0x10, 0x15, 0x1e),
-                accent,
-                accent_pressed,
-                banner: rgb(0x17, 0x25, 0x38),
-                banner_border: rgb(0x29, 0x44, 0x64),
-                tile_radius,
-                button_radius,
-            },
-            "pitch" => Self {
-                caption: rgb(0x06, 0x06, 0x08),
-                canvas: rgb(0x0c, 0x0c, 0x0e),
-                rail: rgb(0x07, 0x07, 0x09),
-                rail_line: rgb(0x1e, 0x1e, 0x24),
-                divider: rgb(0x1b, 0x1b, 0x20),
-                nav_selected: rgb(0x1c, 0x1c, 0x22),
-                tile: rgb(0x15, 0x15, 0x19),
-                tile_border: rgb(0x25, 0x25, 0x2c),
-                card_border: rgb(0x28, 0x28, 0x30),
-                field: rgb(0x09, 0x09, 0x0c),
-                field_border: rgb(0x2c, 0x2c, 0x35),
-                field_bottom: rgb(0x46, 0x46, 0x54),
-                footer: rgb(0x08, 0x08, 0x0a),
-                accent,
-                accent_pressed,
-                banner: rgb(0x13, 0x1b, 0x24),
-                banner_border: rgb(0x24, 0x38, 0x4c),
-                tile_radius,
-                button_radius,
-            },
-            "slate" => Self {
-                caption: rgb(0x1c, 0x1d, 0x22),
-                canvas: rgb(0x25, 0x26, 0x2b),
-                rail: rgb(0x1e, 0x1f, 0x24),
-                rail_line: rgb(0x34, 0x36, 0x3e),
-                divider: rgb(0x30, 0x32, 0x3a),
-                nav_selected: rgb(0x33, 0x35, 0x3e),
-                tile: rgb(0x2e, 0x30, 0x37),
-                tile_border: rgb(0x3d, 0x40, 0x49),
-                card_border: rgb(0x41, 0x44, 0x4e),
-                field: rgb(0x1f, 0x20, 0x25),
-                field_border: rgb(0x46, 0x49, 0x54),
-                field_bottom: rgb(0x63, 0x67, 0x75),
-                footer: rgb(0x20, 0x21, 0x26),
-                accent,
-                accent_pressed,
-                banner: rgb(0x24, 0x31, 0x40),
-                banner_border: rgb(0x37, 0x52, 0x6e),
-                tile_radius,
-                button_radius,
-            },
-            _ => Self {
-                caption: rgb(0x19, 0x19, 0x19),
-                canvas: rgb(0x20, 0x20, 0x20),
-                rail: rgb(0x1b, 0x1b, 0x1b),
-                rail_line: rgb(0x2d, 0x2d, 0x2d),
-                divider: rgb(0x2a, 0x2a, 0x2a),
-                nav_selected: rgb(0x2b, 0x2b, 0x2b),
-                tile: rgb(0x27, 0x27, 0x27),
-                tile_border: rgb(0x33, 0x33, 0x33),
-                card_border: rgb(0x36, 0x36, 0x36),
-                field: rgb(0x1c, 0x1c, 0x1c),
-                field_border: rgb(0x3d, 0x3d, 0x3d),
-                field_bottom: rgb(0x59, 0x59, 0x59),
-                footer: rgb(0x1c, 0x1c, 0x1c),
-                accent,
-                accent_pressed,
-                banner: rgb(0x1d, 0x2a, 0x36),
-                banner_border: rgb(0x2d, 0x48, 0x60),
-                tile_radius,
-                button_radius,
-            },
+        // (caption, canvas, rail, tile, tile_hover, tile_pressed, stroke, hair, field, field_border, ctl)
+        let palette = match prefs.theme.as_str() {
+            "midnight" => [
+                rgb(0x0e, 0x13, 0x1b),
+                rgb(0x14, 0x19, 0x23),
+                rgb(0x0e, 0x13, 0x1b),
+                rgb(0x1d, 0x24, 0x33),
+                rgb(0x25, 0x2d, 0x3e),
+                rgb(0x2d, 0x36, 0x48),
+                rgb(0x31, 0x3c, 0x52),
+                rgb(0x29, 0x32, 0x4a),
+                rgb(0x0f, 0x14, 0x1c),
+                rgb(0x2d, 0x3d, 0x59),
+                rgb(0x7f, 0x8d, 0xa6),
+            ],
+            "pitch" => [
+                rgb(0x06, 0x06, 0x08),
+                rgb(0x0c, 0x0c, 0x0e),
+                rgb(0x07, 0x07, 0x09),
+                rgb(0x17, 0x17, 0x1b),
+                rgb(0x1f, 0x1f, 0x24),
+                rgb(0x27, 0x27, 0x2d),
+                rgb(0x2b, 0x2b, 0x32),
+                rgb(0x23, 0x23, 0x29),
+                rgb(0x08, 0x08, 0x0a),
+                rgb(0x2c, 0x2c, 0x35),
+                rgb(0x72, 0x72, 0x7e),
+            ],
+            "slate" => [
+                rgb(0x1c, 0x1d, 0x22),
+                rgb(0x26, 0x27, 0x2c),
+                rgb(0x1e, 0x1f, 0x24),
+                rgb(0x31, 0x32, 0x39),
+                rgb(0x39, 0x3b, 0x43),
+                rgb(0x42, 0x44, 0x4d),
+                rgb(0x47, 0x4a, 0x54),
+                rgb(0x3e, 0x40, 0x48),
+                rgb(0x1f, 0x20, 0x25),
+                rgb(0x46, 0x49, 0x54),
+                rgb(0x90, 0x94, 0xa0),
+            ],
+            _ => [
+                rgb(0x19, 0x19, 0x19),
+                rgb(0x20, 0x20, 0x20),
+                rgb(0x1b, 0x1b, 0x1b),
+                rgb(0x2b, 0x2b, 0x2b),
+                rgb(0x33, 0x33, 0x33),
+                rgb(0x3b, 0x3b, 0x3b),
+                rgb(0x3d, 0x3d, 0x3d),
+                rgb(0x36, 0x36, 0x36),
+                rgb(0x1c, 0x1c, 0x1c),
+                rgb(0x3d, 0x3d, 0x3d),
+                rgb(0x8b, 0x8b, 0x8b),
+            ],
+        };
+        let [
+            caption,
+            canvas,
+            rail,
+            tile,
+            tile_hover,
+            tile_pressed,
+            tile_border,
+            divider,
+            field,
+            field_border,
+            field_bottom,
+        ] = palette;
+        Self {
+            caption,
+            canvas,
+            rail,
+            footer: rail,
+            rail_line: mix(rail, 0xff_ff_ff, 0.09),
+            divider,
+            nav_selected: mix(rail, accent, 0.16),
+            nav_hover: mix(rail, tile, 0.55),
+            card: mix(tile, 0xff_ff_ff, 0.045),
+            card_border: mix(tile_border, 0xff_ff_ff, 0.10),
+            tile,
+            tile_hover,
+            tile_pressed,
+            tile_border,
+            field,
+            field_border,
+            field_bottom,
+            chip: mix(tile, 0xff_ff_ff, 0.03),
+            accent,
+            accent_hover,
+            accent_pressed,
+            banner: mix(canvas, accent, 0.13),
+            banner_border: mix(canvas, accent, 0.34),
+            tile_radius,
+            button_radius,
         }
+    }
+
+    /// 1 px top highlight for raised surfaces; brighter on darker themes.
+    fn status_fill(&self, tone: u32) -> u32 {
+        mix(self.tile, tone, 0.14)
+    }
+
+    fn status_border(&self, tone: u32) -> u32 {
+        mix(self.tile, tone, 0.34)
     }
 }
 
-// ── Geometry (client area 900 × 588) ───────────────────────────────────────
+// ── Geometry (designed at 900 × 588 logical pixels, scaled for DPI) ────────
 const CLIENT_WIDTH: i32 = 900;
 const CLIENT_HEIGHT: i32 = 588;
 const RAIL_WIDTH: i32 = 206;
@@ -292,6 +378,42 @@ const RIGHT: i32 = 882;
 const FOOTER_TOP: i32 = 540;
 const COLUMN: i32 = 324;
 const COLUMN_GAP: i32 = 9;
+
+/// Display scale as a percentage; 100 is 96 DPI. Set before the window is
+/// created and refreshed on `WM_DPICHANGED`.
+static SCALE: AtomicI32 = AtomicI32::new(100);
+
+/// Logical → device pixels, rounding away from zero.
+fn s(value: i32) -> i32 {
+    let scale = SCALE.load(Ordering::Relaxed);
+    if scale == 100 || value == 0 {
+        value
+    } else {
+        (value * scale + value.signum() * 50) / 100
+    }
+}
+
+fn set_scale(percent: i32) {
+    SCALE.store(percent.clamp(75, 500), Ordering::Relaxed);
+}
+
+/// Reads a window's DPI as a scale percentage (120 = 125 %, 144 = 150 %).
+unsafe fn window_scale(hwnd: HWND) -> i32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        100
+    } else {
+        (dpi as i32 * 100 + 48) / 96
+    }
+}
+
+/// Window DPI, or `SCRP_UI_SCALE` when set (used to screenshot other scalings).
+unsafe fn preferred_scale(hwnd: HWND) -> i32 {
+    std::env::var("SCRP_UI_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or_else(|| unsafe { window_scale(hwnd) })
+}
 
 const RUN_KEY: Pcwstr = windows_sys::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_NAME: Pcwstr = windows_sys::w!("StarCitizenRichPresence");
@@ -412,8 +534,10 @@ enum UpdateState {
     Failed(String),
 }
 
+#[derive(Clone, Copy)]
 struct Fonts {
     brand: HFONT,
+    page_title: HFONT,
     body: HFONT,
     body_semi: HFONT,
     small: HFONT,
@@ -421,6 +545,9 @@ struct Fonts {
     tiny: HFONT,
     tiny_semi: HFONT,
     details: HFONT,
+    kicker: HFONT,
+    glyph: HFONT,
+    glyph_small: HFONT,
     mono: HFONT,
 }
 
@@ -455,9 +582,13 @@ struct Desktop {
     banner: Cell<bool>,
     /// What the window last painted, to skip needless repaints.
     painted: std::cell::RefCell<String>,
-    fonts: std::cell::OnceCell<Fonts>,
+    fonts: Cell<Option<Fonts>>,
     theme: Cell<Theme>,
     field: Cell<HBRUSH>,
+    /// Reused off-screen surface; a repaint draws here once and blits once.
+    buffer: Cell<BackBuffer>,
+    /// Control currently under the pointer, for hover styling.
+    hot: Cell<HWND>,
     /// Everything that can have a custom picture: contract types, then ships.
     targets: Vec<Target>,
     /// Index into `targets` shown on the Images page.
@@ -466,6 +597,23 @@ struct Desktop {
     image_page: Cell<usize>,
     /// Last release version we already showed a Windows tray notification for.
     notified_update: std::cell::RefCell<Option<String>>,
+}
+
+#[derive(Clone, Copy)]
+struct BackBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    width: i32,
+    height: i32,
+}
+
+impl BackBuffer {
+    const EMPTY: Self = Self {
+        dc: null_mut(),
+        bitmap: null_mut(),
+        width: 0,
+        height: 0,
+    };
 }
 
 /// A ship or contract type whose picture can be customised.
@@ -552,8 +700,36 @@ impl Desktop {
         }
     }
 
-    fn fonts(&self) -> &Fonts {
+    fn fonts(&self) -> Fonts {
         self.fonts.get().expect("fonts are created in WM_CREATE")
+    }
+
+    /// The off-screen surface for this window, recreated when the pixel size changes.
+    unsafe fn back_buffer(&self, target: HDC, width: i32, height: i32) -> HDC {
+        unsafe {
+            let current = self.buffer.get();
+            if current.width == width && current.height == height && !current.dc.is_null() {
+                return current.dc;
+            }
+            if !current.dc.is_null() {
+                DeleteObject(current.bitmap);
+                DeleteDC(current.dc);
+            }
+            let dc = CreateCompatibleDC(target);
+            let bitmap = CreateCompatibleBitmap(target, width, height);
+            if dc.is_null() || bitmap.is_null() {
+                self.buffer.set(BackBuffer::EMPTY);
+                return target;
+            }
+            SelectObject(dc, bitmap);
+            self.buffer.set(BackBuffer {
+                dc,
+                bitmap,
+                width,
+                height,
+            });
+            dc
+        }
     }
 }
 
@@ -667,6 +843,9 @@ fn check_for_update(state: Arc<Mutex<UpdateState>>, hwnd: isize) {
 
 pub(super) fn run(start_hidden: bool) -> Result<()> {
     unsafe {
+        // Per-monitor DPI awareness: sharp text and correct layout at any scaling.
+        // Must happen before the first window exists; a manifest may already set it.
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mutex = CreateMutexW(null_mut(), 0, windows_sys::w!("Local\\SCRP.Desktop"));
         if mutex.is_null() {
             return Err(std::io::Error::last_os_error()).context("Cannot start desktop app");
@@ -744,9 +923,11 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             page: Cell::new(CARD),
             banner: Cell::new(false),
             painted: Default::default(),
-            fonts: Default::default(),
+            fonts: Cell::new(None),
             theme: Cell::new(initial_theme),
             field: Cell::new(CreateSolidBrush(initial_theme.field)),
+            buffer: Cell::new(BackBuffer::EMPTY),
+            hot: Cell::new(null_mut()),
             targets: targets(),
             target: Cell::new(0),
             image_page: Cell::new(0),
@@ -796,8 +977,8 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
         let t = desktop.theme.get();
         for (attribute, color) in [
             (DWMWA_CAPTION_COLOR, t.caption),
-            (DWMWA_BORDER_COLOR, t.card_border),
-            (DWMWA_TEXT_COLOR, rgb(0xcf, 0xcf, 0xcf)),
+            (DWMWA_BORDER_COLOR, t.tile_border),
+            (DWMWA_TEXT_COLOR, SOFT),
         ] {
             DwmSetWindowAttribute(
                 hwnd,
@@ -806,6 +987,14 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
                 size_of::<u32>() as u32,
             );
         }
+        // Windows 11: round the window corners like every other modern app.
+        let round = 2u32;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&round as *const u32).cast(),
+            size_of::<u32>() as u32,
+        );
         if !start_hidden || !desktop.tray_ready.get() {
             ShowWindow(hwnd, SW_SHOW);
         }
@@ -831,6 +1020,31 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
             });
         }
 
+        let demo = std::env::var_os("SCRP_DEMO").is_some();
+        if demo {
+            *preview.lock().unwrap() = Some(Snapshot {
+                name: "Star Citizen".into(),
+                details: "Area18 · ArcCorp · Stanton".into(),
+                state: "Aegis Gladius · Bounty Hunting".into(),
+                large_image: String::new(),
+                large_text: "Aegis Gladius".into(),
+                small_image: String::new(),
+                small_text: "Bounty".into(),
+                activity_type: 0,
+                status_display: 0,
+                profile_url: None,
+                buttons: Vec::new(),
+                started: now() - 3661,
+            });
+            if std::env::var_os("SCRP_DEMO_BANNER").is_some() {
+                *update_state.lock().unwrap() = UpdateState::Available(Release {
+                    version: "3.2.0".into(),
+                    notes_url: String::new(),
+                    installer_url: None,
+                    sums_url: None,
+                });
+            }
+        }
         let signal = Arc::clone(&running);
         let worker = std::thread::spawn(move || {
             monitor(
@@ -848,7 +1062,11 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
                     }
                     prefs.enabled
                 },
-                |card| *preview.lock().unwrap() = card.cloned(),
+                |card| {
+                    if !demo {
+                        *preview.lock().unwrap() = card.cloned()
+                    }
+                },
             )
         });
         let mut msg = MSG::default();
@@ -917,29 +1135,214 @@ unsafe fn hide(hwnd: HWND, desktop: &Desktop) {
 }
 
 unsafe fn font(size: i32, weight: i32, face: Pcwstr) -> HFONT {
-    unsafe { CreateFontW(size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, face) }
+    unsafe { CreateFontW(s(size), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, face) }
+}
+
+/// Creates (or recreates, after a DPI change) every font the panel draws with.
+unsafe fn create_fonts(desktop: &Desktop) {
+    unsafe {
+        if let Some(old) = desktop.fonts.replace(None) {
+            delete_fonts(old);
+        }
+        let face = windows_sys::w!("Segoe UI");
+        desktop.fonts.set(Some(Fonts {
+            brand: font(-15, 600, face),
+            page_title: font(-18, 600, face),
+            body: font(-13, 400, face),
+            body_semi: font(-13, 600, face),
+            small: font(-12, 400, face),
+            small_semi: font(-12, 600, face),
+            tiny: font(-11, 400, face),
+            tiny_semi: font(-11, 600, face),
+            details: font(-16, 600, face),
+            kicker: font(-10, 700, face),
+            glyph: font(-16, 400, windows_sys::w!("Segoe MDL2 Assets")),
+            glyph_small: font(-11, 400, windows_sys::w!("Segoe MDL2 Assets")),
+            mono: font(-12, 400, windows_sys::w!("Consolas")),
+        }));
+    }
+}
+
+unsafe fn delete_fonts(fonts: Fonts) {
+    unsafe {
+        for handle in [
+            fonts.brand,
+            fonts.page_title,
+            fonts.body,
+            fonts.body_semi,
+            fonts.small,
+            fonts.small_semi,
+            fonts.tiny,
+            fonts.tiny_semi,
+            fonts.details,
+            fonts.kicker,
+            fonts.glyph,
+            fonts.glyph_small,
+            fonts.mono,
+        ] {
+            DeleteObject(handle);
+        }
+    }
+}
+
+unsafe extern "system" fn apply_child_font(child: HWND, font: LPARAM) -> i32 {
+    unsafe {
+        SendMessageW(child, WM_SETFONT, font as usize, 1);
+    }
+    1
+}
+
+/// Points every child control at the current body font.
+unsafe fn apply_fonts(hwnd: HWND, desktop: &Desktop) {
+    unsafe {
+        EnumChildWindows(
+            hwnd,
+            Some(apply_child_font),
+            desktop.fonts().body as usize as LPARAM,
+        );
+    }
+}
+
+/// Marks the control under the pointer as hot, so it can paint a hover state.
+unsafe fn track_hover(hwnd: HWND, msg: u32, desktop: *const Desktop) {
+    unsafe {
+        if desktop.is_null() {
+            return;
+        }
+        let desktop = &*desktop;
+        match msg {
+            WM_MOUSEMOVE => {
+                desktop.hot.set(hwnd);
+                let mut event = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                TrackMouseEvent(&mut event);
+            }
+            WM_MOUSELEAVE => {
+                desktop.hot.set(null_mut());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Shared subclass: hover feedback and a hand cursor for owner-drawn buttons.
+unsafe extern "system" fn hover_subclass(
+    hwnd: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    id: usize,
+    _data: usize,
+) -> LRESULT {
+    unsafe {
+        let _ = id;
+        if matches!(msg, WM_MOUSEMOVE | WM_MOUSELEAVE) {
+            let parent = GetParent(hwnd);
+            let ptr = GetWindowLongPtrW(parent, GWLP_USERDATA) as *const Desktop;
+            track_hover(hwnd, msg, ptr);
+            InvalidateRect(hwnd, null_mut(), 0);
+        }
+        if msg == WM_SETCURSOR {
+            SetCursor(LoadCursorW(null_mut(), IDC_HAND));
+            return 1;
+        }
+        DefSubclassProc(hwnd, msg, w, l)
+    }
+}
+
+/// Resizes the window so the client area is exactly the design size at the current scale.
+unsafe fn fit_client(hwnd: HWND) {
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        let mut frame = RECT {
+            left: 0,
+            top: 0,
+            right: s(CLIENT_WIDTH),
+            bottom: s(CLIENT_HEIGHT),
+        };
+        AdjustWindowRectEx(&mut frame, style, 0, 0);
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            0,
+            0,
+            frame.right - frame.left,
+            frame.bottom - frame.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────────
 
 fn card_top(banner: bool) -> i32 {
-    if banner { 62 } else { 14 }
+    if banner { 56 } else { 14 }
+}
+
+/// Hero card height: shorter while the update banner is showing.
+fn card_height(banner: bool) -> i32 {
+    if banner { 96 } else { 112 }
 }
 
 fn page_top(banner: bool) -> i32 {
-    card_top(banner) + 106 + 16
+    card_top(banner) + card_height(banner) + 14
+}
+
+// ── Rail geometry ───────────────────────────────────────────────────────────
+const NAV_TOP: i32 = 80;
+const NAV_HEIGHT: i32 = 34;
+const NAV_PITCH: i32 = 40;
+
+fn nav_rect(index: i32) -> RECT {
+    rect(8, NAV_TOP + index * NAV_PITCH, 190, NAV_HEIGHT)
+}
+
+// ── Footer geometry ─────────────────────────────────────────────────────────
+const BUTTON_HEIGHT: i32 = 32;
+const FOOTER_Y: i32 = FOOTER_TOP + 8;
+
+fn footer_rects() -> [(i32, RECT); 3] {
+    [
+        (EXIT, rect(LEFT, FOOTER_Y, 84, BUTTON_HEIGHT)),
+        (
+            HIDE,
+            rect(RIGHT - 12 - 88 - 108, FOOTER_Y, 108, BUTTON_HEIGHT),
+        ),
+        (SAVE, rect(RIGHT - 88, FOOTER_Y, 88, BUTTON_HEIGHT)),
+    ]
 }
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> RECT {
+    let (left, top) = (s(x), s(y));
     RECT {
-        left: x,
-        top: y,
-        right: x + w,
-        bottom: y + h,
+        left,
+        top,
+        right: left + s(w),
+        bottom: top + s(h),
     }
 }
 
+/// A child rectangle positioned in logical units relative to a device rect.
+fn at(r: RECT, x: i32, y: i32, w: i32, h: i32) -> RECT {
+    RECT {
+        left: r.left + s(x),
+        top: r.top + s(y),
+        right: r.left + s(x + w),
+        bottom: r.top + s(y + h),
+    }
+}
+
+/// One settings row: 42 px tall, a 13 px title over an 11 px description.
+const ROW_H: i32 = 42;
+const ROW_GAP: i32 = 6;
+const GROUP_ROW_H: i32 = 46;
+
 /// Toggle tiles per page: (id, label, column, row, full width).
+/// Rows 0-3 sit under "Show on card", rows 4-5 under "General".
 const CARD_TILES: [(i32, &str, i32, i32, bool); 10] = [
     (LOCATION, "Location", 0, 0, false),
     (SHIP, "Ship", 1, 0, false),
@@ -948,40 +1351,66 @@ const CARD_TILES: [(i32, &str, i32, i32, bool); 10] = [
     (NOTICES, "Game notices", 0, 2, false),
     (PROFILE, "RSI profile button", 1, 2, false),
     (ART, "Wiki artwork", 0, 3, true),
-    (ENABLED, "Share on Discord", 0, 5, false),
-    (STARTUP, "Start with Windows", 1, 5, false),
-    (UPDATES, "Check for updates automatically", 0, 6, true),
+    (ENABLED, "Share on Discord", 0, 4, false),
+    (STARTUP, "Start with Windows", 1, 4, false),
+    (UPDATES, "Check for updates automatically", 0, 5, true),
 ];
 
+/// The one-line explanation under each Card-page toggle title.
+fn toggle_detail(id: i32) -> &'static str {
+    match id {
+        LOCATION => "System and landing zone",
+        SHIP => "The ship you're flying",
+        CONTRACTS => "Your active contract",
+        PARTY => "When you're in a group",
+        NOTICES => "Hangar and refinery alerts",
+        PROFILE => "Link to your citizen page",
+        ART => "Ship and location pictures from the wiki",
+        ENABLED => "Publish live presence to Discord",
+        STARTUP => "Start minimised in the tray",
+        UPDATES => "Daily GitHub release check",
+        _ => "",
+    }
+}
+
 fn tile_rect(top: i32, column: i32, row: i32, full: bool) -> RECT {
-    // Rows 5+ belong to the "General" group, below a second heading.
-    let y = top + 26 + row * 42 + if row >= 5 { 34 - 42 } else { 0 };
+    let y = top + 52 + group_offset(row) + row * (ROW_H + ROW_GAP);
     let x = LEFT + column * (COLUMN + COLUMN_GAP);
-    rect(x, y, if full { RIGHT - LEFT } else { COLUMN }, 36)
+    rect(x, y, if full { RIGHT - LEFT } else { COLUMN }, ROW_H)
 }
 
-/// Activity page rows: the control sits at the right of each 44 px row.
+/// Extra space taken by the "General" kicker between rows 3 and 4.
+fn group_offset(row: i32) -> i32 {
+    if row >= 4 { 26 } else { 0 }
+}
+
+/// Frames the layout uses, relative to `top`, for Activity rows.
 fn activity_row(top: i32, index: i32) -> RECT {
-    rect(LEFT, top + 26 + index * 50, RIGHT - LEFT, 44)
+    let y = if index < 2 {
+        top + 52 + index * GROUP_ROW_H
+    } else {
+        top + 170 + (index - 2) * GROUP_ROW_H
+    };
+    rect(LEFT, y, RIGHT - LEFT, GROUP_ROW_H)
 }
 
-/// Picture tile `index` on the Images page: nine 66×66 1:1 square icon previews per row.
+/// Picture tile `index` on the Images page: nine 66×66 1:1 previews per row.
 fn choice_rect(top: i32, index: usize) -> RECT {
     let (column, row) = ((index % 9) as i32, (index / 9) as i32);
-    rect(LEFT + column * 73, top + 64 + row * 72, 66, 66)
+    rect(LEFT + column * 73, top + 74 + row * 73, 66, 66)
 }
 
 /// "Your own link" field below the picture grid.
 fn link_frame(top: i32) -> RECT {
-    rect(LEFT, top + 280, RIGHT - LEFT - 128, 30)
+    rect(LEFT, top + 296, RIGHT - LEFT - 128, 32)
 }
 
 fn buttons_box(top: i32) -> RECT {
-    rect(LEFT, top + 26, RIGHT - LEFT, 128)
+    rect(LEFT, top + 52, RIGHT - LEFT, 144)
 }
 
-fn updates_row(top: i32) -> RECT {
-    rect(LEFT, top + 26, RIGHT - LEFT, 64)
+fn updates_hero(top: i32) -> RECT {
+    rect(LEFT, top + 34, RIGHT - LEFT, 84)
 }
 
 /// Field frames drawn behind EDIT controls: (id, frame).
@@ -991,7 +1420,15 @@ fn fields(page: usize, top: i32) -> Vec<(i32, RECT)> {
             .into_iter()
             .map(|(row, id)| {
                 let r = activity_row(top, row);
-                (id, rect(r.right - 14 - 260, r.top + 7, 260, 30))
+                (
+                    id,
+                    RECT {
+                        left: r.right - s(14 + 252),
+                        top: r.top + s(8),
+                        right: r.right - s(14),
+                        bottom: r.top + s(38),
+                    },
+                )
             })
             .collect(),
         IMAGES => vec![(IMAGE_LINK, link_frame(top))],
@@ -1001,10 +1438,18 @@ fn fields(page: usize, top: i32) -> Vec<(i32, RECT)> {
                 .into_iter()
                 .enumerate()
                 .flat_map(|(i, (label, url))| {
-                    let y = b.top + 28 + i as i32 * 58;
+                    let y = 44 + i as i32 * 58;
                     [
-                        (label, rect(b.left + 12, y, 180, 30)),
-                        (url, rect(b.left + 200, y, b.right - b.left - 212, 30)),
+                        (label, at(b, 14, y, 200, 32)),
+                        (
+                            url,
+                            RECT {
+                                left: b.left + s(226),
+                                top: b.top + s(y),
+                                right: b.right - s(14),
+                                bottom: b.top + s(y + 32),
+                            },
+                        ),
                     ]
                 })
                 .collect()
@@ -1039,40 +1484,39 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
         let banner = desktop.banner.get();
         let top = page_top(banner);
         let hidden = rect(-500, -500, 10, 10);
+        // Hover state does not survive a relayout: controls move or hide.
+        desktop.hot.set(null_mut());
 
-        for (index, _) in PAGES.iter().enumerate() {
-            place(
-                hwnd,
-                NAV + index as i32,
-                true,
-                rect(10, 92 + index as i32 * 39, 186, 36),
-            );
+        for index in 0..PAGES.len() as i32 {
+            place(hwnd, NAV + index, true, nav_rect(index));
         }
-        for (id, _, column, row, full) in CARD_TILES {
+        for (id, text, column, row, full) in CARD_TILES {
+            let _ = text;
             place(hwnd, id, page == CARD, tile_rect(top, column, row, full));
         }
         // Banner actions.
-        place(
-            hwnd,
-            UPDATE_NOW,
-            banner,
-            rect(RIGHT - 10 - 104, 20, 104, 24),
-        );
+        place(hwnd, UPDATE_NOW, banner, rect(RIGHT - 12 - 96, 22, 96, 24));
         place(
             hwnd,
             RELEASE_NOTES,
             banner,
-            rect(RIGHT - 10 - 104 - 12 - 96, 20, 96, 24),
+            rect(RIGHT - 12 - 96 - 8 - 92, 22, 92, 24),
         );
 
-        // Activity page.
+        // Activity page: the two combos sit at the right of their rows.
         for (row, id) in [(0, VERB), (1, MEMBER_LIST)] {
             let r = activity_row(top, row);
             place(
                 hwnd,
                 id,
                 page == ACTIVITY,
-                rect(r.right - 14 - 260, r.top + 7, 260, 220),
+                RECT {
+                    left: r.right - s(14 + 252),
+                    top: r.top + s(8),
+                    right: r.right - s(14),
+                    // A dropdown needs room for its list below the closed box.
+                    bottom: r.top + s(8 + 220),
+                },
             );
         }
         // Images page.
@@ -1081,31 +1525,31 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             hwnd,
             IMAGE_TARGET,
             page == IMAGES,
-            rect(LEFT, top + 26, if paged { 260 } else { 330 }, 320),
+            rect(LEFT, top + 34, if paged { 252 } else { 330 }, 320),
         );
         place(
             hwnd,
             IMG_PREV,
             page == IMAGES && paged,
-            rect(LEFT + 268, top + 26, 58, 30),
+            rect(LEFT + 262, top + 34, 52, 30),
         );
         place(
             hwnd,
             IMG_NEXT,
             page == IMAGES && paged,
-            rect(LEFT + 332, top + 26, 58, 30),
+            rect(LEFT + 322, top + 34, 52, 30),
         );
         place(
             hwnd,
             UPLOAD_IMAGE,
             page == IMAGES,
-            rect(RIGHT - 130 - 8 - 124, top + 26, 124, 30),
+            rect(RIGHT - 130 - 8 - 124, top + 34, 124, 30),
         );
         place(
             hwnd,
             USE_DEFAULT,
             page == IMAGES,
-            rect(RIGHT - 130, top + 26, 130, 30),
+            rect(RIGHT - 130, top + 34, 130, 30),
         );
         let (_, visible) = desktop.visible_choices();
         for index in 0..MAX_CHOICES {
@@ -1121,53 +1565,65 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
             hwnd,
             USE_LINK,
             page == IMAGES,
-            rect(RIGHT - 120, link.top, 120, 30),
+            rect(RIGHT - 120, link.top, 120, 32),
         );
         // Appearance page.
         for index in 0..THEMES.len() {
-            let w = 156;
-            let gap = 11;
+            let (w, gap) = (158, 11);
             place(
                 hwnd,
                 THEME_BTN + index as i32,
                 page == APPEARANCE,
-                rect(LEFT + index as i32 * (w + gap), top + 46, w, 64),
+                rect(LEFT + index as i32 * (w + gap), top + 52, w, 68),
             );
         }
         for index in 0..ACCENTS.len() {
-            let w = 102;
-            let gap = 9;
+            let (w, gap) = (104, 8);
             place(
                 hwnd,
                 ACCENT_BTN + index as i32,
                 page == APPEARANCE,
-                rect(LEFT + index as i32 * (w + gap), top + 144, w, 38),
+                rect(LEFT + index as i32 * (w + gap), top + 146, w, 38),
             );
         }
         for index in 0..2 {
-            let w = 156;
-            let gap = 11;
+            let (w, gap) = (158, 11);
             place(
                 hwnd,
                 CORNER_BTN + index,
                 page == APPEARANCE,
-                rect(LEFT + index * (w + gap), top + 216, w, 36),
+                rect(LEFT + index * (w + gap), top + 210, w, 36),
             );
         }
         // Updates page.
-        let u = updates_row(top);
+        let u = updates_hero(top);
         place(
             hwnd,
             UPDATE_ACTION,
             page == UPDATES_PAGE,
-            rect(u.right - 14 - 160, u.top + 17, 160, 30),
+            RECT {
+                left: u.right - s(14 + 136),
+                top: u.top + s(26),
+                right: u.right - s(14),
+                bottom: u.top + s(26 + BUTTON_HEIGHT),
+            },
         );
         place(
             hwnd,
             UPDATE_NOTES,
             page == UPDATES_PAGE,
-            rect(u.right - 14 - 160 - 12 - 110, u.top + 17, 110, 30),
+            RECT {
+                left: u.right - s(14 + 136 + 10 + 110),
+                top: u.top + s(26),
+                right: u.right - s(14 + 136 + 10),
+                bottom: u.top + s(26 + BUTTON_HEIGHT),
+            },
         );
+
+        // Footer.
+        for (id, r) in footer_rects() {
+            place(hwnd, id, true, r);
+        }
 
         // EDIT controls sit inside painted field frames.
         for id in [GAME_NAME, DETAILS, CUSTOM, IMAGE_LINK, 121, 122, 123, 124] {
@@ -1194,18 +1650,7 @@ unsafe fn layout(hwnd: HWND, desktop: &Desktop) {
 
 unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
     unsafe {
-        let face = windows_sys::w!("Segoe UI");
-        let _ = desktop.fonts.set(Fonts {
-            brand: font(-15, 600, face),
-            body: font(-13, 400, face),
-            body_semi: font(-13, 600, face),
-            small: font(-12, 400, face),
-            small_semi: font(-12, 600, face),
-            tiny: font(-11, 400, face),
-            tiny_semi: font(-11, 600, face),
-            details: font(-16, 600, face),
-            mono: font(-12, 400, windows_sys::w!("Consolas")),
-        });
+        create_fonts(desktop);
         let body = desktop.fonts().body;
         let control = |class: Pcwstr, label: &str, style: u32, id: i32| {
             let handle = CreateWindowExW(
@@ -1226,12 +1671,14 @@ unsafe fn build_controls(hwnd: HWND, desktop: &Desktop) {
             handle
         };
         let button = |id: i32, label: &str| {
-            control(
+            let handle = control(
                 windows_sys::w!("BUTTON"),
                 label,
                 WS_TABSTOP | BS_OWNERDRAW as u32,
                 id,
-            )
+            );
+            SetWindowSubclass(handle, Some(hover_subclass), 3, 0);
+            handle
         };
         let prefs = desktop.prefs.lock().unwrap().clone();
 
@@ -1387,15 +1834,6 @@ unsafe fn fill(dc: HDC, r: RECT, color: u32) {
     }
 }
 
-/// Rounded rectangle with an optional 1 px border (`radius` is the corner radius).
-fn color_channels(color: u32) -> (f32, f32, f32) {
-    (
-        (color & 0xff) as f32,
-        ((color >> 8) & 0xff) as f32,
-        ((color >> 16) & 0xff) as f32,
-    )
-}
-
 /// Anti-aliased rounded rectangle (with optional crisp 1 px inner border) via analytical SDF.
 unsafe fn shape(dc: HDC, r: RECT, radius: i32, color: u32, border: Option<u32>) {
     unsafe {
@@ -1407,41 +1845,11 @@ unsafe fn shape(dc: HDC, r: RECT, radius: i32, color: u32, border: Option<u32>) 
             fill(dc, r, color);
             return;
         }
-        let (wf, hf) = (w as f32, h as f32);
-        let (hx, hy) = (wf * 0.5, hf * 0.5);
-        let rad = (radius.max(0) as f32).min(hx).min(hy);
-        let (fr, fg, fb) = color_channels(color);
-        let (br, bg, bb) = border.map_or((fr, fg, fb), color_channels);
-        let has_border = border.is_some();
-        let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
-        for y in 0..h {
-            let dy = (y as f32 + 0.5 - hy).abs() - (hy - rad);
-            let row = (y as usize) * (w as usize) * 4;
-            for x in 0..w {
-                let dx = (x as f32 + 0.5 - hx).abs() - (hx - rad);
-                let dist = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - rad;
-                let outer = (0.5 - dist).clamp(0.0, 1.0);
-                if outer <= 0.0 {
-                    continue;
-                }
-                let (fill_w, border_w) = if has_border {
-                    let inner = (-0.5 - dist).clamp(0.0, 1.0);
-                    (inner, (outer - inner).max(0.0))
-                } else {
-                    (outer, 0.0)
-                };
-                let idx = row + (x as usize) * 4;
-                bgra[idx] = (fb * fill_w + bb * border_w).round() as u8;
-                bgra[idx + 1] = (fg * fill_w + bg * border_w).round() as u8;
-                bgra[idx + 2] = (fr * fill_w + br * border_w).round() as u8;
-                bgra[idx + 3] = (outer * 255.0).round() as u8;
-            }
-        }
-        let thumb = Thumbnail {
-            width: w as u32,
-            height: h as u32,
-            bgra,
-        };
+        let thumb = SHAPES.with(|cache| {
+            cache
+                .borrow_mut()
+                .get_rounded(w as u32, h as u32, radius, color, border)
+        });
         draw_thumbnail(dc, &thumb, r.left, r.top);
     }
 }
@@ -1452,31 +1860,7 @@ unsafe fn circle(dc: HDC, x: i32, y: i32, size: i32, color: u32) {
         if size <= 0 {
             return;
         }
-        let (fr, fg, fb) = color_channels(color);
-        let radius = size as f32 * 0.5;
-        let mut bgra = vec![0u8; (size as usize) * (size as usize) * 4];
-        for py in 0..size {
-            let dy = py as f32 + 0.5 - radius;
-            let row = (py as usize) * (size as usize) * 4;
-            for px in 0..size {
-                let dx = px as f32 + 0.5 - radius;
-                let dist = dx.hypot(dy) - radius;
-                let cov = (0.5 - dist).clamp(0.0, 1.0);
-                if cov <= 0.0 {
-                    continue;
-                }
-                let idx = row + (px as usize) * 4;
-                bgra[idx] = (fb * cov).round() as u8;
-                bgra[idx + 1] = (fg * cov).round() as u8;
-                bgra[idx + 2] = (fr * cov).round() as u8;
-                bgra[idx + 3] = (cov * 255.0).round() as u8;
-            }
-        }
-        let thumb = Thumbnail {
-            width: size as u32,
-            height: size as u32,
-            bgra,
-        };
+        let thumb = SHAPES.with(|cache| cache.borrow_mut().get_circle(size as u32, color));
         draw_thumbnail(dc, &thumb, x, y);
     }
 }
@@ -1501,18 +1885,39 @@ unsafe fn text(dc: HDC, value: &str, mut r: RECT, font: HFONT, color: u32, flags
         let previous = SelectObject(dc, font);
         SetBkMode(dc, TRANSPARENT as i32);
         SetTextColor(dc, color);
-        let mut value: Vec<u16> = value.encode_utf16().collect();
-        let len = value.len() as i32;
-        DrawTextW(dc, value.as_mut_ptr(), len, &mut r, flags | DT_NOPREFIX);
-        let mut measured = r;
-        DrawTextW(
-            dc,
-            value.as_mut_ptr(),
-            len,
-            &mut measured,
-            flags | DT_NOPREFIX | DT_CALCRECT,
-        );
+        let mut wide: Vec<u16> = value.encode_utf16().collect();
+        let len = wide.len() as i32;
+        DrawTextW(dc, wide.as_mut_ptr(), len, &mut r, flags | DT_NOPREFIX);
+        let mut size = SIZE::default();
+        GetTextExtentPoint32W(dc, wide.as_mut_ptr(), len, &mut size);
         SelectObject(dc, previous);
+        RECT {
+            left: r.left,
+            top: r.top,
+            right: r.left + size.cx,
+            bottom: r.top + size.cy,
+        }
+    }
+}
+
+/// Width of `value` in `font`, without drawing it.
+unsafe fn width_of(dc: HDC, value: &str, font: HFONT) -> i32 {
+    unsafe {
+        let previous = SelectObject(dc, font);
+        let mut wide: Vec<u16> = value.encode_utf16().collect();
+        let mut size = SIZE::default();
+        GetTextExtentPoint32W(dc, wide.as_mut_ptr(), wide.len() as i32, &mut size);
+        SelectObject(dc, previous);
+        size.cx
+    }
+}
+
+/// Draws a small caps label with 1 px tracking.
+unsafe fn kicker_text(dc: HDC, value: &str, r: RECT, font: HFONT, color: u32, flags: u32) -> RECT {
+    unsafe {
+        let previous = SetTextCharacterExtra(dc, s(1));
+        let measured = text(dc, value, r, font, color, flags);
+        SetTextCharacterExtra(dc, previous);
         measured
     }
 }
@@ -1584,7 +1989,7 @@ fn want_thumbnail(
     let url = url.to_owned();
     let handle = hwnd as isize;
     std::thread::spawn(move || {
-        let result = thumbnail::fetch(&url, width, height, mask).ok();
+        let result = thumbnail::fetch_cached(&url, width, height, mask).ok();
         cache.lock().unwrap().insert(key, result);
         request_refresh(handle);
     });
@@ -1606,18 +2011,6 @@ impl Liveness {
             Self::Waiting => "Waiting for game",
         }
     }
-    /// (fill, border, text)
-    fn colors(self) -> (u32, u32, u32) {
-        match self {
-            Self::Live => (rgb(0x1d, 0x2e, 0x20), rgb(0x2e, 0x52, 0x34), GREEN),
-            Self::Paused => (
-                rgb(0x33, 0x29, 0x1b),
-                rgb(0x5e, 0x4b, 0x2e),
-                rgb(0xf5, 0xcf, 0x87),
-            ),
-            Self::Waiting => (rgb(0x2a, 0x2a, 0x2a), rgb(0x3d, 0x3d, 0x3d), STATE_TEXT),
-        }
-    }
 }
 
 fn liveness(desktop: &Desktop) -> Liveness {
@@ -1634,9 +2027,9 @@ fn elapsed(started: i64) -> String {
     let seconds = (now() - started).max(0);
     let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
     if h > 0 {
-        format!("{h}:{m:02}:{s:02} elapsed")
+        format!("{h}:{m:02}:{s:02}")
     } else {
-        format!("{m}:{s:02} elapsed")
+        format!("{m}:{s:02}")
     }
 }
 
@@ -1644,11 +2037,9 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let target = BeginPaint(hwnd, &mut ps);
+        let (width, height) = (s(CLIENT_WIDTH), s(CLIENT_HEIGHT));
+        let dc = desktop.back_buffer(target, width, height);
         let full = rect(0, 0, CLIENT_WIDTH, CLIENT_HEIGHT);
-        let dc = CreateCompatibleDC(target);
-        let bitmap = CreateCompatibleBitmap(target, CLIENT_WIDTH, CLIENT_HEIGHT);
-        let old = SelectObject(dc, bitmap);
-        let f = desktop.fonts();
         let t = desktop.theme.get();
 
         fill(dc, full, t.canvas);
@@ -1690,12 +2081,8 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
             FOOTER_TOP + 1,
             t.rail_line,
         );
-        let _ = f;
 
-        BitBlt(target, 0, 0, CLIENT_WIDTH, CLIENT_HEIGHT, dc, 0, 0, SRCCOPY);
-        SelectObject(dc, old);
-        DeleteObject(bitmap);
-        DeleteDC(dc);
+        BitBlt(target, 0, 0, width, height, dc, 0, 0, SRCCOPY);
         EndPaint(hwnd, &ps);
     }
 }
@@ -1707,73 +2094,131 @@ unsafe fn paint_rail(dc: HDC, desktop: &Desktop) {
         fill(dc, rect(0, 0, RAIL_WIDTH, CLIENT_HEIGHT), t.rail);
         line(
             dc,
-            RAIL_WIDTH,
+            s(RAIL_WIDTH),
             0,
-            RAIL_WIDTH + 1,
-            CLIENT_HEIGHT,
+            s(RAIL_WIDTH + 1),
+            s(CLIENT_HEIGHT),
             t.rail_line,
         );
-        shape(
+
+        // Brand block.
+        shape(dc, rect(16, 16, 32, 32), 8, t.tile, Some(t.tile_border));
+        DrawIconEx(
             dc,
-            rect(16, 14, 32, 32),
-            t.tile_radius,
-            t.tile,
-            Some(t.tile_border),
+            s(22),
+            s(22),
+            desktop.icon,
+            s(20),
+            s(20),
+            0,
+            null_mut(),
+            DI_NORMAL,
         );
-        DrawIconEx(dc, 22, 20, desktop.icon, 20, 20, 0, null_mut(), DI_NORMAL);
         text(
             dc,
             "Star Citizen",
-            rect(58, 13, 140, 20),
+            rect(58, 14, 132, 18),
             f.brand,
             TEXT,
             LEFT_LINE,
         );
         text(
             dc,
-            "Discord Rich Presence",
-            rect(58, 32, 140, 16),
+            "Rich Presence",
+            rect(58, 33, 132, 14),
             f.tiny,
-            rgb(0x9b, 0x9b, 0x9b),
+            MUTED,
             LEFT_LINE,
         );
-        line(dc, 16, 60, 190, 61, t.divider);
-        text(
+        fade_line(
             dc,
-            "SETTINGS",
-            rect(20, 70, 160, 16),
-            f.tiny_semi,
-            FAINT,
-            LEFT_LINE,
+            s(16),
+            s(190),
+            64,
+            mix(t.accent, t.rail, 0.30),
+            t.divider,
         );
 
-        line(dc, 16, 546, 190, 547, t.divider);
+        // Status footer: halo dot, label, version.
         let live = liveness(desktop);
-        let (_, _, color) = live.colors();
-        circle(dc, 18, 562, 7, color);
-        let label = match live {
-            Liveness::Live => "Connected",
-            Liveness::Paused => "Paused",
-            Liveness::Waiting => "Waiting",
+        let (tone, label) = match live {
+            Liveness::Live => (LIVE, "Connected"),
+            Liveness::Paused => (PAUSED, "Paused"),
+            Liveness::Waiting => (MUTED, "Waiting"),
         };
+        line(
+            dc,
+            s(16),
+            s(FOOTER_TOP),
+            s(RAIL_WIDTH),
+            s(FOOTER_TOP + 1),
+            t.rail_line,
+        );
+        if live != Liveness::Waiting {
+            circle(dc, s(15), s(558), s(15), mix(t.rail, tone, 0.16));
+            circle(dc, s(17), s(560), s(11), mix(t.rail, tone, 0.36));
+        }
+        circle(dc, s(19), s(562), s(7), tone);
         text(
             dc,
             label,
-            rect(31, 556, 100, 20),
+            rect(32, 555, 110, 18),
             f.small_semi,
-            color,
+            tone,
             LEFT_LINE,
         );
-        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
-        let chip = rect(190 - 52, 555, 52, 21);
-        shape(dc, chip, 4, t.tile, Some(t.tile_border));
         text(
             dc,
-            &version,
-            chip,
-            f.small_semi,
-            rgb(0xa8, 0xa8, 0xa8),
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+            &format!("v{}", env!("CARGO_PKG_VERSION")),
+            rect(132, 555, 58, 18),
+            f.tiny,
+            MUTED,
+            DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+}
+
+/// One-pixel horizontal line that fades from `from` to `to` left to right.
+unsafe fn fade_line(dc: HDC, x1: i32, x2: i32, y: i32, from: u32, to: u32) {
+    unsafe {
+        const STEPS: i32 = 20;
+        let width = x2 - x1;
+        if width <= 0 {
+            return;
+        }
+        for step in 0..STEPS {
+            let a = x1 + width * step / STEPS;
+            let b = x1 + width * (step + 1) / STEPS;
+            let color = mix(from, to, step as f32 / (STEPS - 1) as f32);
+            line(dc, a, s(y), b.max(a + 1), s(y + 1), color);
+        }
+    }
+}
+
+/// Soft drop shadow: a few offset rounded rectangles under a raised surface.
+unsafe fn shadow(dc: HDC, t: Theme, r: RECT, radius: i32) {
+    unsafe {
+        for (offset, weight) in [(4, 0.55), (2, 0.35), (1, 0.20)] {
+            let mut layer = r;
+            layer.top += s(offset);
+            layer.bottom += s(offset);
+            shape(dc, layer, radius, mix(t.canvas, rgb(0, 0, 0), weight), None);
+        }
+    }
+}
+
+/// A raised settings surface: fill, hairline border and a 1 px top highlight.
+unsafe fn surface(dc: HDC, r: RECT, radius: i32, fill_color: u32, border: u32) {
+    unsafe {
+        shape(dc, r, radius, fill_color, Some(border));
+        let inset = s(radius.max(8));
+        line(
+            dc,
+            r.left + inset,
+            r.top + 1,
+            r.right - inset,
+            r.top + 2,
+            lighten(fill_color, 0.06),
         );
     }
 }
@@ -1782,14 +2227,19 @@ unsafe fn paint_banner(dc: HDC, desktop: &Desktop) {
     unsafe {
         let f = desktop.fonts();
         let t = desktop.theme.get();
-        let r = rect(LEFT, 14, RIGHT - LEFT, 36);
-        shape(dc, r, t.tile_radius, t.banner, Some(t.banner_border));
-        circle(dc, LEFT + 12, 23, 18, t.accent);
+        let r = rect(LEFT, 12, RIGHT - LEFT, 34);
+        shape(dc, r, t.tile_radius + 2, t.banner, Some(t.banner_border));
+        circle(dc, r.left + s(10), r.top + s(8), s(18), t.accent);
         text(
             dc,
-            "↑",
-            rect(LEFT + 12, 23, 19, 18),
-            f.small_semi,
+            "\u{E896}",
+            RECT {
+                left: r.left + s(10),
+                top: r.top + s(8),
+                right: r.left + s(28),
+                bottom: r.top + s(26),
+            },
+            f.glyph,
             ON_ACCENT,
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -1797,13 +2247,20 @@ unsafe fn paint_banner(dc: HDC, desktop: &Desktop) {
             UpdateState::Downloading(release) => {
                 format!("Downloading version {}…", release.version)
             }
-            UpdateState::Available(release) => format!("Version {} is available", release.version),
+            UpdateState::Available(release) => {
+                format!("Version {} is ready to install", release.version)
+            }
             _ => String::new(),
         };
         text(
             dc,
             &message,
-            rect(LEFT + 40, 14, 360, 36),
+            RECT {
+                left: r.left + s(38),
+                top: r.top,
+                right: r.right - s(220),
+                bottom: r.bottom,
+            },
             f.small_semi,
             BANNER_TEXT,
             LEFT_LINE,
@@ -1816,41 +2273,58 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
         let f = desktop.fonts();
         let t = desktop.theme.get();
         let card = desktop.preview.lock().unwrap().clone();
-        let prefs = desktop.prefs.lock().unwrap().clone();
-        shape(
-            dc,
-            rect(LEFT, top, RIGHT - LEFT, 106),
-            t.tile_radius + 2,
-            t.tile,
-            Some(t.card_border),
-        );
+        // Copy only the fields this paint needs: `Preferences` owns two image maps.
+        let (artwork_on, game_name, activity_type) = {
+            let prefs = desktop.prefs.lock().unwrap();
+            (
+                prefs.artwork,
+                prefs.game_name.trim().to_string(),
+                prefs.activity_type.clone(),
+            )
+        };
+        let height = card_height(desktop.banner.get());
+        let r = rect(LEFT, top, RIGHT - LEFT, height);
+        let radius = t.tile_radius + 4;
 
-        // Artwork: 78 px ship (or location) art with a 22 px mission badge.
-        let (ax, ay) = (LEFT + 14, top + 14);
+        shadow(dc, t, r, radius);
+        surface(dc, r, radius, t.card, t.card_border);
+
+        // Artwork: 82 px ship (or location) art with a 28 px badge.
+        let size = if height < 100 { 74 } else { 82 };
+        let ay = r.top + s((height - size) / 2);
+        let ax = r.left + s(15);
         let large = card
             .as_ref()
             .map(|c| c.large_image.clone())
             .unwrap_or_default();
-        let art = (prefs.artwork && large.starts_with("https://"))
-            .then(|| want_thumbnail(desktop, hwnd, &large, (78, 78), Mask::Rounded(6)))
+        let art = (artwork_on && large.starts_with("https://"))
+            .then(|| {
+                want_thumbnail(
+                    desktop,
+                    hwnd,
+                    &large,
+                    (size as u32, size as u32),
+                    Mask::Rounded(8),
+                )
+            })
             .flatten();
         match art {
             Some(thumb) => draw_thumbnail(dc, &thumb, ax, ay),
             None => {
-                shape(
-                    dc,
-                    rect(ax, ay, 78, 78),
-                    t.tile_radius,
-                    t.field,
-                    Some(t.field_border),
-                );
+                let well = RECT {
+                    left: ax,
+                    top: ay,
+                    right: ax + s(size),
+                    bottom: ay + s(size),
+                };
+                shape(dc, well, 8, t.field, Some(t.field_border));
                 DrawIconEx(
                     dc,
-                    ax + 23,
-                    ay + 23,
+                    ax + s(size / 2 - 16),
+                    ay + s(size / 2 - 16),
                     desktop.icon,
-                    32,
-                    32,
+                    s(32),
+                    s(32),
                     0,
                     null_mut(),
                     DI_NORMAL,
@@ -1861,72 +2335,104 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
             .as_ref()
             .map(|c| c.small_image.clone())
             .unwrap_or_default();
-        if prefs.artwork
+        if artwork_on
             && small.starts_with("https://")
             && let Some(badge) = want_thumbnail(desktop, hwnd, &small, (22, 22), Mask::Circle)
         {
-            circle(dc, ax + 78 - 23, ay + 78 - 23, 28, t.tile);
-            draw_thumbnail(dc, &badge, ax + 78 - 20, ay + 78 - 20);
+            circle(dc, ax + s(size - 23), ay + s(size - 23), s(28), t.card);
+            draw_thumbnail(dc, &badge, ax + s(size - 20), ay + s(size - 20));
         }
 
-        let x = ax + 78 + 14;
-        let width = RIGHT - 14 - x;
         let live = liveness(desktop);
-        let verb = prefs
-            .activity_type
+        let x = ax + s(size) + s(16);
+        let text_right = r.right - s(14);
+        let verb = activity_type
             .as_deref()
             .unwrap_or(&desktop.base.activity_type);
         let verb = VERBS
             .iter()
             .find(|(key, _)| *key == verb)
             .map_or("Playing", |(_, label)| label);
-        let app = if !prefs.game_name.trim().is_empty() {
-            prefs.game_name.trim()
+        let app = if !game_name.is_empty() {
+            game_name.as_str()
         } else if desktop.base.discord_app_id == star_citizen_rich_presence::config::DEFAULT_APP_ID
         {
             "Star Citizen"
         } else {
             "your Discord app"
         };
-        text(
-            dc,
-            &format!("{verb} {app}"),
-            rect(x, top + 12, width - 140, 18),
-            f.small_semi,
-            t.accent,
-            LEFT_LINE,
-        );
 
-        // Status pill, right-aligned.
-        let (pill_fill, pill_border, pill_text) = live.colors();
+        // Status pill, right-aligned on the overline row.
+        let (pill_fill, pill_border, pill_text) = match live {
+            Liveness::Live => (t.status_fill(LIVE), t.status_border(LIVE), LIVE),
+            Liveness::Paused => (t.status_fill(PAUSED), t.status_border(PAUSED), PAUSED),
+            Liveness::Waiting => (t.chip, t.tile_border, MUTED),
+        };
         let label = live.label();
-        let measured = text(
-            dc,
-            label,
-            rect(0, 0, 400, 20),
-            f.tiny_semi,
-            pill_text,
-            DT_SINGLELINE | DT_CALCRECT,
-        );
-        let pill_width = measured.right - measured.left + 30;
-        let pill = rect(RIGHT - 14 - pill_width, top + 11, pill_width, 20);
-        shape(dc, pill, 10, pill_fill, Some(pill_border));
-        circle(dc, pill.left + 9, pill.top + 7, 6, pill_text);
+        let pill_width = width_of(dc, label, f.tiny_semi) + s(34);
+        let pill_top = r.top + s(11);
+        let pill = RECT {
+            left: text_right - pill_width,
+            top: pill_top,
+            right: text_right,
+            bottom: pill_top + s(22),
+        };
+        shape(dc, pill, 11, pill_fill, Some(pill_border));
+        if live != Liveness::Waiting {
+            circle(
+                dc,
+                pill.left + s(7),
+                pill.top + s(6),
+                s(12),
+                mix(pill_fill, pill_text, 0.22),
+            );
+        }
+        circle(dc, pill.left + s(9), pill.top + s(8), s(6), pill_text);
         text(
             dc,
             label,
-            rect(pill.left + 20, pill.top, pill_width - 20, 20),
+            RECT {
+                left: pill.left + s(21),
+                top: pill.top,
+                right: pill.right,
+                bottom: pill.bottom,
+            },
             f.tiny_semi,
             pill_text,
             LEFT_LINE,
         );
 
+        let verb_area = RECT {
+            left: x,
+            top: r.top + s(12),
+            right: pill.left - s(10),
+            bottom: r.top + s(30),
+        };
+        kicker_text(
+            dc,
+            &format!("{verb} {app}").to_uppercase(),
+            verb_area,
+            f.kicker,
+            if live == Liveness::Live {
+                t.accent
+            } else {
+                MUTED
+            },
+            LEFT_LINE,
+        );
+
+        let text_width = text_right - x;
         match &card {
             Some(card) => {
                 text(
                     dc,
                     &card.details,
-                    rect(x, top + 31, width, 22),
+                    RECT {
+                        left: x,
+                        top: r.top + s(30),
+                        right: x + text_width,
+                        bottom: r.top + s(54),
+                    },
                     f.details,
                     TEXT,
                     LEFT_LINE,
@@ -1934,42 +2440,97 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
                 text(
                     dc,
                     &card.state,
-                    rect(x, top + 54, width, 18),
-                    f.small,
-                    STATE_TEXT,
+                    RECT {
+                        left: x,
+                        top: r.top + s(56),
+                        right: x + text_width,
+                        bottom: r.top + s(74),
+                    },
+                    f.body,
+                    SOFT,
                     LEFT_LINE,
                 );
+                let elapsed_text = elapsed(card.started);
                 text(
                     dc,
-                    &elapsed(card.started),
-                    rect(x, top + 75, width, 18),
-                    f.small_semi,
-                    GREEN,
+                    &elapsed_text,
+                    RECT {
+                        left: x,
+                        top: r.top + s(78),
+                        right: x + text_width,
+                        bottom: r.top + s(96),
+                    },
+                    f.mono,
+                    if live == Liveness::Live { LIVE } else { MUTED },
                     LEFT_LINE,
                 );
+                if !card.large_text.is_empty() && card.large_text != "Star Citizen" {
+                    let offset = width_of(dc, &elapsed_text, f.mono) + s(14);
+                    line(
+                        dc,
+                        x + offset - s(8),
+                        r.top + s(82),
+                        x + offset - s(7),
+                        r.top + s(93),
+                        t.divider,
+                    );
+                    text(
+                        dc,
+                        &card.large_text,
+                        RECT {
+                            left: x + offset,
+                            top: r.top + s(78),
+                            right: x + text_width,
+                            bottom: r.top + s(96),
+                        },
+                        f.small,
+                        MUTED,
+                        LEFT_LINE,
+                    );
+                }
             }
             None => {
                 text(
                     dc,
                     "Nothing on your card yet",
-                    rect(x, top + 31, width, 22),
+                    RECT {
+                        left: x,
+                        top: r.top + s(30),
+                        right: x + text_width,
+                        bottom: r.top + s(54),
+                    },
                     f.details,
                     TEXT,
                     LEFT_LINE,
                 );
-                let status = desktop.status.lock().unwrap().clone();
                 text(
                     dc,
-                    "It appears here and on Discord once Star Citizen is running.",
-                    rect(x, top + 54, width, 18),
-                    f.small,
-                    STATE_TEXT,
+                    "Your live card appears here and on Discord once Star Citizen is running.",
+                    RECT {
+                        left: x,
+                        top: r.top + s(56),
+                        right: x + text_width,
+                        bottom: r.top + s(74),
+                    },
+                    f.body,
+                    SOFT,
                     LEFT_LINE,
                 );
+                let status = desktop.status.lock().unwrap().clone();
+                let line = if status.starts_with("Waiting for Star Citizen") {
+                    "Open Discord, then launch the game — the card fills in by itself.".to_string()
+                } else {
+                    status
+                };
                 text(
                     dc,
-                    &status,
-                    rect(x, top + 75, width, 18),
+                    &line,
+                    RECT {
+                        left: x,
+                        top: r.top + s(78),
+                        right: x + text_width,
+                        bottom: r.top + s(96),
+                    },
                     f.small,
                     MUTED,
                     LEFT_LINE,
@@ -1979,25 +2540,464 @@ unsafe fn paint_card(dc: HDC, hwnd: HWND, desktop: &Desktop, top: i32) {
     }
 }
 
-unsafe fn heading(dc: HDC, desktop: &Desktop, top: i32, title: &str, subtitle: &str) {
+/// Page title on the left, one-line explanation on the right.
+unsafe fn page_header(dc: HDC, desktop: &Desktop, top: i32, title: &str, subtitle: &str) {
     unsafe {
         let f = desktop.fonts();
         text(
             dc,
             title,
-            rect(LEFT, top, 300, 20),
-            f.body_semi,
-            HEADING,
+            rect(LEFT, top, 320, 26),
+            f.page_title,
+            TEXT,
             LEFT_LINE,
         );
         if !subtitle.is_empty() {
             text(
                 dc,
                 subtitle,
-                rect(LEFT + 300, top, RIGHT - LEFT - 300, 20),
+                RECT {
+                    left: rect(LEFT + 320, top, RIGHT - LEFT - 320, 26).left,
+                    top: rect(0, top, 0, 0).top,
+                    right: rect(RIGHT, 0, 0, 0).left,
+                    bottom: rect(0, top, 0, 0).top + s(26),
+                },
                 f.small,
-                rgb(0x8f, 0x8f, 0x8f),
+                MUTED,
                 DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
+    }
+}
+
+/// Section label with a hairline rule running to the right edge.
+unsafe fn section_kicker(dc: HDC, desktop: &Desktop, top: i32, label: &str) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        let measured = kicker_text(
+            dc,
+            label,
+            rect(LEFT, top, 400, 14),
+            f.kicker,
+            MUTED,
+            LEFT_LINE,
+        );
+        line(
+            dc,
+            measured.right + s(10),
+            s(top + 7),
+            s(RIGHT),
+            s(top + 8),
+            t.divider,
+        );
+    }
+}
+
+/// Painted label + description row inside a grouped card.
+unsafe fn settings_row(dc: HDC, desktop: &Desktop, r: RECT, title: &str, detail: &str) {
+    unsafe {
+        let f = desktop.fonts();
+        text(
+            dc,
+            title,
+            at(r, 14, 7, 420, 16),
+            f.body_semi,
+            TEXT,
+            LEFT_LINE,
+        );
+        if !detail.is_empty() {
+            text(dc, detail, at(r, 14, 25, 440, 14), f.tiny, MUTED, LEFT_LINE);
+        }
+    }
+}
+
+/// One grouped card holding `rows` painted settings rows, with hairline dividers.
+unsafe fn settings_group(
+    dc: HDC,
+    desktop: &Desktop,
+    r: RECT,
+    rows: &[(i32, &str, &str)],
+    row_height: i32,
+) {
+    unsafe {
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.tile, t.tile_border);
+        for (index, (_, title, detail)) in rows.iter().enumerate() {
+            let row = at(r, 0, index as i32 * row_height, RIGHT - LEFT, row_height);
+            settings_row(dc, desktop, row, title, detail);
+            if index > 0 {
+                line(
+                    dc,
+                    row.left + s(14),
+                    row.top,
+                    row.right - s(14),
+                    row.top + 1,
+                    t.divider,
+                );
+            }
+        }
+    }
+}
+
+/// Small rounded chip with centred text; returns its width.
+unsafe fn chip(
+    dc: HDC,
+    desktop: &Desktop,
+    r: RECT,
+    label: &str,
+    fill: u32,
+    border: u32,
+    color: u32,
+) -> i32 {
+    unsafe {
+        let f = desktop.fonts();
+        let width = width_of(dc, label, f.tiny_semi) + s(18);
+        let pill = RECT {
+            left: r.left,
+            top: r.top,
+            right: r.left + width,
+            bottom: r.bottom,
+        };
+        shape(dc, pill, (r.bottom - r.top) / 2, fill, Some(border));
+        text(
+            dc,
+            label,
+            RECT {
+                left: pill.left + s(9),
+                top: pill.top,
+                right: pill.right,
+                bottom: pill.bottom,
+            },
+            f.tiny_semi,
+            color,
+            LEFT_LINE,
+        );
+        width
+    }
+}
+
+/// Fluent-style switch track and knob at `(x, y)`, 40 × 20 logical pixels.
+unsafe fn switch(dc: HDC, t: Theme, x: i32, y: i32, on: bool, enabled: bool) {
+    unsafe {
+        let track = rect(0, 0, 40, 20);
+        let track = RECT {
+            left: x,
+            top: y,
+            right: x + (track.right - track.left),
+            bottom: y + (track.bottom - track.top),
+        };
+        if on {
+            shape(
+                dc,
+                track,
+                10,
+                if enabled {
+                    t.accent
+                } else {
+                    mix(t.tile, t.accent, 0.30)
+                },
+                None,
+            );
+            circle(
+                dc,
+                track.right - s(16),
+                track.top + s(4),
+                s(12),
+                if enabled { ON_ACCENT } else { MUTED },
+            );
+        } else {
+            shape(
+                dc,
+                track,
+                10,
+                t.canvas,
+                Some(if enabled { t.field_bottom } else { t.divider }),
+            );
+            circle(
+                dc,
+                track.left + s(4),
+                track.top + s(4),
+                s(12),
+                if enabled { SOFT } else { DISABLED },
+            );
+        }
+    }
+}
+
+/// Discord-style member-list row showing what the selected line looks like.
+unsafe fn preview_member_list(dc: HDC, desktop: &Desktop, r: RECT) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.field, t.field_border);
+        let avatar = at(r, 14, 14, 36, 36);
+        shape(dc, avatar, 18, t.tile, Some(t.tile_border));
+        DrawIconEx(
+            dc,
+            avatar.left + s(10),
+            avatar.top + s(10),
+            desktop.icon,
+            s(16),
+            s(16),
+            0,
+            null_mut(),
+            DI_NORMAL,
+        );
+        circle(
+            dc,
+            avatar.right - s(10),
+            avatar.bottom - s(10),
+            s(9),
+            t.field,
+        );
+        circle(dc, avatar.right - s(9), avatar.bottom - s(9), s(7), LIVE);
+
+        let card = desktop.preview.lock().unwrap().clone();
+        let prefs = desktop.prefs.lock().unwrap();
+        let choice = prefs
+            .status_display
+            .clone()
+            .unwrap_or_else(|| desktop.base.status_display.clone());
+        drop(prefs);
+        let line = match choice.as_str() {
+            "details" => card
+                .as_ref()
+                .map_or_else(|| "In the 'verse".to_string(), |c| c.details.clone()),
+            "state" => card.as_ref().map_or_else(
+                || "Waiting for Star Citizen".to_string(),
+                |c| c.state.clone(),
+            ),
+            _ => "Star Citizen".to_string(),
+        };
+        text(
+            dc,
+            "You",
+            at(r, 62, 12, 200, 18),
+            f.body_semi,
+            TEXT,
+            LEFT_LINE,
+        );
+        text(dc, &line, at(r, 62, 32, 320, 18), f.small, SOFT, LEFT_LINE);
+        text(
+            dc,
+            "MEMBER LIST",
+            RECT {
+                left: r.right - s(110),
+                top: r.top + s(22),
+                right: r.right - s(14),
+                bottom: r.top + s(40),
+            },
+            f.kicker,
+            MUTED,
+            DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
+        );
+    }
+}
+
+/// A Discord-shaped preview of the buttons that will appear on the card.
+unsafe fn preview_buttons(dc: HDC, desktop: &Desktop, r: RECT, buttons: &[CardButton]) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.field, t.field_border);
+        text(
+            dc,
+            "PREVIEW",
+            at(r, 16, 14, 240, 14),
+            f.kicker,
+            MUTED,
+            LEFT_LINE,
+        );
+        let mut labels: Vec<&str> = buttons
+            .iter()
+            .filter(|b| !b.label.trim().is_empty())
+            .map(|b| b.label.trim())
+            .take(2)
+            .collect();
+        if labels.len() < 2 && desktop.prefs.lock().unwrap().profile {
+            labels.push("RSI Profile");
+        }
+        for index in 0..2 {
+            let pill = at(r, 14, 40 + index as i32 * 42, RIGHT - LEFT - 28, 32);
+            let pill = RECT {
+                left: pill.left,
+                top: pill.top,
+                right: r.right - s(14),
+                bottom: pill.bottom,
+            };
+            match labels.get(index) {
+                Some(label) => {
+                    shape(dc, pill, 4, t.chip, Some(t.tile_border));
+                    text(
+                        dc,
+                        label,
+                        pill,
+                        f.small_semi,
+                        SOFT,
+                        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                    );
+                }
+                None => {
+                    shape(dc, pill, 4, t.field, Some(t.divider));
+                    text(
+                        dc,
+                        "Empty slot",
+                        pill,
+                        f.small,
+                        DISABLED,
+                        DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Bullet list explaining how the two button slots behave.
+unsafe fn rules_card(dc: HDC, desktop: &Desktop, r: RECT) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.tile, t.tile_border);
+        text(
+            dc,
+            "HOW SLOTS WORK",
+            at(r, 16, 14, 240, 14),
+            f.kicker,
+            MUTED,
+            LEFT_LINE,
+        );
+        for (index, rule) in [
+            "Labels are 1 to 32 characters.",
+            "Links must start with https://.",
+            "The RSI profile button fills the next free slot.",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let y = 40 + index as i32 * 24;
+            circle(dc, r.left + s(16), r.top + s(y + 6), s(6), t.accent);
+            text(
+                dc,
+                rule,
+                at(r, 30, y, RIGHT - LEFT - 44, 18),
+                f.small,
+                SOFT,
+                LEFT_LINE,
+            );
+        }
+        text(
+            dc,
+            "Click Apply to publish changes.",
+            at(r, 16, 116, 280, 14),
+            f.tiny,
+            MUTED,
+            LEFT_LINE,
+        );
+    }
+}
+
+/// Mini control sample so theme, accent and corner changes are visible in place.
+unsafe fn sample_strip(dc: HDC, desktop: &Desktop, r: RECT) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.tile, t.tile_border);
+        text(
+            dc,
+            "PREVIEW",
+            at(r, 16, 20, 120, 14),
+            f.kicker,
+            MUTED,
+            LEFT_LINE,
+        );
+        let primary = at(r, 92, 12, 88, 32);
+        shape(dc, primary, t.button_radius, t.accent, None);
+        text(
+            dc,
+            "Apply",
+            primary,
+            f.body_semi,
+            ON_ACCENT,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        let secondary = at(r, 188, 12, 108, 32);
+        shape(dc, secondary, t.button_radius, t.tile, Some(t.tile_border));
+        text(
+            dc,
+            "Hide to tray",
+            secondary,
+            f.body_semi,
+            TEXT,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        switch(dc, t, r.left + s(312), r.top + s(18), true, true);
+        let pill = at(r, 366, 18, 0, 20);
+        let width = chip(
+            dc,
+            desktop,
+            RECT {
+                left: pill.left,
+                top: pill.top,
+                right: pill.left,
+                bottom: pill.bottom,
+            },
+            "Live on Discord",
+            t.status_fill(LIVE),
+            t.status_border(LIVE),
+            LIVE,
+        );
+        let _ = width;
+    }
+}
+
+/// Two-column key/value card used on the Updates page.
+unsafe fn diagnostics(dc: HDC, desktop: &Desktop, r: RECT, title: &str, rows: &[(&str, &str)]) {
+    unsafe {
+        let f = desktop.fonts();
+        let t = desktop.theme.get();
+        surface(dc, r, t.tile_radius + 2, t.tile, t.tile_border);
+        text(
+            dc,
+            title,
+            at(r, 16, 12, 240, 14),
+            f.kicker,
+            MUTED,
+            LEFT_LINE,
+        );
+        for (index, (key, value)) in rows.iter().enumerate() {
+            let y = 32 + index as i32 * 28;
+            if index > 0 {
+                line(
+                    dc,
+                    r.left + s(16),
+                    r.top + s(y),
+                    r.right - s(16),
+                    r.top + s(y + 1),
+                    t.divider,
+                );
+            }
+            text(
+                dc,
+                key,
+                at(r, 16, y + 6, 140, 18),
+                f.small,
+                MUTED,
+                LEFT_LINE,
+            );
+            text(
+                dc,
+                value,
+                RECT {
+                    left: r.left + s(160),
+                    top: r.top + s(y + 6),
+                    right: r.right - s(16),
+                    bottom: r.top + s(y + 24),
+                },
+                f.small_semi,
+                SOFT,
+                DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
             );
         }
     }
@@ -2009,66 +3009,63 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
         let t = desktop.theme.get();
         match desktop.page.get() {
             CARD => {
-                heading(
-                    dc,
-                    desktop,
-                    top,
-                    "Show on card",
-                    "Choose what appears on Discord",
-                );
-                heading(dc, desktop, top + 26 + 4 * 42 + 6, "General", "");
+                page_header(dc, desktop, top, "Card", "Choose what appears on Discord");
+                section_kicker(dc, desktop, top + 34, "SHOW ON CARD");
+                section_kicker(dc, desktop, top + 244, "GENERAL");
             }
             ACTIVITY => {
-                heading(
+                page_header(
                     dc,
                     desktop,
                     top,
-                    "Activity and text",
+                    "Activity & text",
                     "How Discord words your status",
                 );
-                for (index, (title, description)) in [
-                    (
-                        "Discord says",
-                        "The verb before your status (e.g. Playing Star Citizen)",
-                    ),
-                    (
-                        "Member list shows",
-                        "Which line appears next to your name in server member lists",
-                    ),
-                    (
-                        "Game name",
-                        "Overrides the game title (e.g. Scam Citizen) — click Apply",
-                    ),
-                    (
-                        "Line 2",
-                        "Overrides the automatic location line (leave blank for auto)",
-                    ),
-                    (
-                        "Line 3",
-                        "Overrides the automatic ship & contract line (blank for auto)",
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let r = activity_row(top, index as i32);
-                    shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
-                    text(
-                        dc,
-                        title,
-                        rect(r.left + 14, r.top + 5, 340, 18),
-                        f.body_semi,
-                        TEXT,
-                        LEFT_LINE,
-                    );
-                    text(
-                        dc,
-                        description,
-                        rect(r.left + 14, r.top + 23, 360, 16),
-                        f.small,
-                        MUTED,
-                        LEFT_LINE,
-                    );
+                section_kicker(dc, desktop, top + 34, "STATUS FORMAT");
+                settings_group(
+                    dc,
+                    desktop,
+                    rect(LEFT, top + 52, RIGHT - LEFT, 2 * GROUP_ROW_H),
+                    &[
+                        (
+                            VERB,
+                            "Discord says",
+                            "The verb before your status (Playing Star Citizen)",
+                        ),
+                        (
+                            MEMBER_LIST,
+                            "Member list shows",
+                            "The line next to your name in server member lists",
+                        ),
+                    ],
+                    GROUP_ROW_H,
+                );
+                section_kicker(dc, desktop, top + 152, "TEXT OVERRIDES");
+                settings_group(
+                    dc,
+                    desktop,
+                    rect(LEFT, top + 170, RIGHT - LEFT, 3 * GROUP_ROW_H),
+                    &[
+                        (
+                            GAME_NAME,
+                            "Game name",
+                            "Replaces Star Citizen where Discord allows it",
+                        ),
+                        (
+                            DETAILS,
+                            "Line 2",
+                            "Overrides the location line (blank for auto)",
+                        ),
+                        (
+                            CUSTOM,
+                            "Line 3",
+                            "Overrides the ship and contract line (blank for auto)",
+                        ),
+                    ],
+                    GROUP_ROW_H,
+                );
+                if !desktop.banner.get() {
+                    preview_member_list(dc, desktop, rect(LEFT, FOOTER_TOP - 78, RIGHT - LEFT, 64));
                 }
             }
             IMAGES => {
@@ -2086,178 +3083,338 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     }
                 };
                 let status = if pages > 1 {
-                    format!("{base_status} · Page {page_num} of {pages} ({total} pictures)")
+                    format!("{base_status} · Page {page_num} of {pages} · {total} pictures")
                 } else {
-                    base_status
+                    format!("{base_status} · {total} pictures")
                 };
-                heading(dc, desktop, top, "Custom images", &status);
-                let count = total;
-                if count == 0 {
+                let custom = desktop.prefs.lock().unwrap().overrides().len();
+                let status = if custom > 0 {
+                    format!("{status} · {custom} custom")
+                } else {
+                    status
+                };
+                page_header(dc, desktop, top, "Custom images", &status);
+                if total == 0 {
                     text(
                         dc,
                         "No wiki pictures for this one yet. Upload an image or paste an https:// link below.",
-                        rect(LEFT, top + 70, RIGHT - LEFT, 20),
+                        rect(LEFT, top + 74, RIGHT - LEFT, 20),
                         f.small,
-                        FAINT,
+                        MUTED,
                         LEFT_LINE,
                     );
                 }
                 let link = link_frame(top);
                 text(
                     dc,
-                    "Click a picture to use it, click Upload image to pick a file from your PC, \
-                     or paste an https:// link. Uploaded images are resized and hosted publicly so Discord can show them.",
-                    rect(LEFT, link.bottom + 10, RIGHT - LEFT, 34),
+                    "Click a picture to use it. Uploads are resized and hosted publicly so Discord can show them.",
+                    rect(LEFT, link.bottom + 10, RIGHT - LEFT, 32),
                     f.small,
                     MUTED,
                     DT_LEFT | DT_WORDBREAK,
                 );
             }
             BUTTONS => {
-                heading(
+                page_header(
                     dc,
                     desktop,
                     top,
                     "Discord buttons",
                     "Up to two links on your card",
                 );
+                section_kicker(dc, desktop, top + 34, "CUSTOM LINKS");
                 let b = buttons_box(top);
-                shape(dc, b, t.tile_radius, t.tile, Some(t.tile_border));
-                for (index, caption) in ["Button 1", "Button 2"].into_iter().enumerate() {
-                    let y = b.top + 8 + index as i32 * 58;
+                surface(dc, b, t.tile_radius + 2, t.tile, t.tile_border);
+                let buttons = desktop
+                    .prefs
+                    .lock()
+                    .unwrap()
+                    .buttons
+                    .clone()
+                    .unwrap_or_default();
+                for index in 0..2 {
+                    let slot = at(b, 0, index as i32 * 72, RIGHT - LEFT, 72);
+                    if index > 0 {
+                        line(
+                            dc,
+                            slot.left + s(14),
+                            slot.top,
+                            slot.right - s(14),
+                            slot.top + 1,
+                            t.divider,
+                        );
+                    }
                     text(
                         dc,
-                        caption,
-                        rect(b.left + 12, y, 200, 18),
+                        &format!("Button {}", index + 1),
+                        at(slot, 14, 10, 200, 16),
                         f.small_semi,
-                        MUTED,
+                        SOFT,
                         LEFT_LINE,
                     );
+                    let entry = buttons.get(index);
+                    let ready = entry.is_some_and(|b| {
+                        !b.label.trim().is_empty() && b.url.trim().starts_with("https://")
+                    });
+                    let (label, fill, border, ink) = if ready {
+                        ("Ready", t.status_fill(LIVE), t.status_border(LIVE), LIVE)
+                    } else if entry
+                        .is_some_and(|b| !b.label.trim().is_empty() || !b.url.trim().is_empty())
+                    {
+                        (
+                            "Needs https://",
+                            t.status_fill(PAUSED),
+                            t.status_border(PAUSED),
+                            PAUSED,
+                        )
+                    } else if index == 1 && desktop.prefs.lock().unwrap().profile {
+                        (
+                            "RSI profile fills this",
+                            t.status_fill(t.accent),
+                            t.status_border(t.accent),
+                            t.accent,
+                        )
+                    } else {
+                        ("Empty", t.chip, t.tile_border, MUTED)
+                    };
+                    let width = width_of(dc, label, f.tiny_semi) + s(18);
+                    chip(
+                        dc,
+                        desktop,
+                        RECT {
+                            left: slot.right - s(14) - width,
+                            top: slot.top + s(9),
+                            right: slot.right - s(14),
+                            bottom: slot.top + s(25),
+                        },
+                        label,
+                        fill,
+                        border,
+                        ink,
+                    );
                 }
-                text(
+                section_kicker(dc, desktop, top + 206, "ON YOUR CARD");
+                let column = (RIGHT - LEFT - COLUMN_GAP) / 2;
+                preview_buttons(dc, desktop, rect(LEFT, top + 224, column, 140), &buttons);
+                rules_card(
                     dc,
-                    "Labels are 1–32 characters; links must start with https://. With one button, \
-                     the RSI profile button can use the free slot. Click Apply to save.",
-                    rect(LEFT, b.bottom + 10, RIGHT - LEFT, 34),
-                    f.small,
-                    MUTED,
-                    DT_LEFT | DT_WORDBREAK,
+                    desktop,
+                    rect(LEFT + column + COLUMN_GAP, top + 224, column, 140),
                 );
             }
             APPEARANCE => {
-                heading(
+                page_header(
                     dc,
                     desktop,
                     top,
                     "Appearance",
-                    "Customise the control panel theme",
+                    "Themes, accent colour and corners",
                 );
+                section_kicker(dc, desktop, top + 34, "COLOUR SCHEME");
+                section_kicker(dc, desktop, top + 128, "ACCENT COLOUR");
+                section_kicker(dc, desktop, top + 192, "CORNER STYLE");
                 text(
                     dc,
-                    "COLOUR SCHEME",
-                    rect(LEFT, top + 26, 200, 16),
-                    f.tiny_semi,
-                    FAINT,
-                    LEFT_LINE,
-                );
-                text(
-                    dc,
-                    "ACCENT COLOUR",
-                    rect(LEFT, top + 124, 200, 16),
-                    f.tiny_semi,
-                    FAINT,
-                    LEFT_LINE,
-                );
-                text(
-                    dc,
-                    "CORNER STYLE",
-                    rect(LEFT, top + 196, 200, 16),
-                    f.tiny_semi,
-                    FAINT,
-                    LEFT_LINE,
-                );
-                text(
-                    dc,
-                    "Changes apply immediately and are saved to your local preferences.",
-                    rect(LEFT, top + 264, RIGHT - LEFT, 20),
+                    "Saved automatically. Every change applies immediately.",
+                    rect(LEFT, top + 256, RIGHT - LEFT, 18),
                     f.small,
                     MUTED,
                     LEFT_LINE,
                 );
+                sample_strip(dc, desktop, rect(LEFT, top + 280, RIGHT - LEFT, 56));
             }
             _ => {
-                heading(
+                page_header(
                     dc,
                     desktop,
                     top,
                     "Updates",
-                    &format!("Installed: v{}", env!("CARGO_PKG_VERSION")),
+                    &format!("Installed v{}", env!("CARGO_PKG_VERSION")),
                 );
-                let r = updates_row(top);
-                shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
                 let state = desktop.update.lock().unwrap().clone();
-                let (title, description) = match &state {
+                let hero = updates_hero(top);
+                surface(dc, hero, t.tile_radius + 2, t.tile, t.tile_border);
+                let (tone, glyph, title, description) = match &state {
                     UpdateState::Idle => (
+                        MUTED,
+                        "\u{E895}",
                         "Updates".to_string(),
                         if desktop.base.check_for_updates {
-                            "Not checked yet.".to_string()
+                            "Not checked yet."
                         } else {
-                            "Turned off in scrp.toml (check_for_updates = false).".to_string()
-                        },
+                            "Turned off in scrp.toml (check_for_updates = false)."
+                        }
+                        .to_string(),
                     ),
                     UpdateState::Checking => (
-                        "Checking for updates…".into(),
-                        "Asking GitHub for the latest release.".into(),
+                        t.accent,
+                        "\u{E895}",
+                        "Checking for updates…".to_string(),
+                        "Asking GitHub for the latest release.".to_string(),
                     ),
                     UpdateState::UpToDate => (
-                        "You're up to date".into(),
-                        "This is the latest release.".into(),
+                        LIVE,
+                        "\u{E73E}",
+                        "You're up to date".to_string(),
+                        "This is the latest release.".to_string(),
                     ),
                     UpdateState::Available(release) => (
+                        t.accent,
+                        "\u{E896}",
                         format!("Version {} is available", release.version),
-                        if release.installer_url.is_some() && release.sums_url.is_some() {
-                            "Downloads, verifies, and installs the update, then reopens.".into()
-                        } else {
-                            "Download the new version from the GitHub release page.".into()
-                        },
+                        "Downloads, verifies and installs, then reopens.".to_string(),
                     ),
                     UpdateState::Downloading(release) => (
+                        t.accent,
+                        "\u{E896}",
                         format!("Downloading version {}…", release.version),
-                        "The app closes and reopens when the installer finishes.".into(),
+                        "The app closes and reopens when the installer finishes.".to_string(),
                     ),
-                    UpdateState::Failed(error) => ("Couldn't update".into(), error.clone()),
+                    UpdateState::Failed(error) => (
+                        ERROR,
+                        "\u{E7BA}",
+                        "Couldn't update".to_string(),
+                        error.clone(),
+                    ),
                 };
+                let emblem = at(hero, 16, 20, 44, 44);
+                shape(
+                    dc,
+                    emblem,
+                    t.tile_radius + 4,
+                    mix(t.tile, tone, 0.18),
+                    Some(mix(t.tile, tone, 0.4)),
+                );
+                text(
+                    dc,
+                    glyph,
+                    RECT {
+                        left: emblem.left,
+                        top: emblem.top,
+                        right: emblem.right,
+                        bottom: emblem.bottom,
+                    },
+                    f.glyph,
+                    tone,
+                    DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                );
                 text(
                     dc,
                     &title,
-                    rect(r.left + 14, r.top + 12, 340, 20),
-                    f.body_semi,
+                    at(hero, 74, 18, RIGHT - LEFT - 340, 22),
+                    f.details,
                     TEXT,
                     LEFT_LINE,
                 );
                 text(
                     dc,
                     &description,
-                    rect(r.left + 14, r.top + 34, 340, 18),
+                    at(hero, 74, 44, RIGHT - LEFT - 340, 18),
                     f.small,
                     MUTED,
                     LEFT_LINE,
                 );
+
+                section_kicker(dc, desktop, top + 126, "ENVIRONMENT & VERIFICATION");
+                let column = (RIGHT - LEFT - COLUMN_GAP) / 2;
+                diagnostics(
+                    dc,
+                    desktop,
+                    rect(LEFT, top + 144, column, 120),
+                    "INSTALLATION",
+                    &[
+                        ("Installed", env!("CARGO_PKG_VERSION")),
+                        ("Game channel", &desktop.base.channel),
+                        (
+                            "Update checks",
+                            if desktop.base.check_for_updates {
+                                "Startup & daily"
+                            } else {
+                                "Off in scrp.toml"
+                            },
+                        ),
+                    ],
+                );
+                diagnostics(
+                    dc,
+                    desktop,
+                    rect(LEFT + column + COLUMN_GAP, top + 144, column, 120),
+                    "PRIVACY",
+                    &[
+                        ("Release host", "GitHub (HTTPS)"),
+                        ("Installer check", "SHA-256 verified"),
+                        ("Data sent", "None · local log"),
+                    ],
+                );
+                let monitor = rect(LEFT, top + 276, RIGHT - LEFT, 96);
+                surface(dc, monitor, t.tile_radius + 2, t.tile, t.tile_border);
+                let live = liveness(desktop);
+                let (tone, label) = match live {
+                    Liveness::Live => (LIVE, "Connected to Discord"),
+                    Liveness::Paused => (PAUSED, "Sharing paused"),
+                    Liveness::Waiting => (MUTED, "Waiting for Star Citizen"),
+                };
+                circle(dc, monitor.left + s(16), monitor.top + s(16), s(10), tone);
                 text(
                     dc,
-                    "Checks ask GitHub for the latest release when the app starts and once a day. \
-                     Nothing about you or your game is sent. Installers are verified against the \
-                     release's checksums before they run.",
-                    rect(LEFT, r.bottom + 12, RIGHT - LEFT, 34),
-                    f.small,
+                    "PRESENCE MONITOR",
+                    at(monitor, 34, 12, 200, 16),
+                    f.kicker,
                     MUTED,
-                    DT_LEFT | DT_WORDBREAK,
+                    LEFT_LINE,
+                );
+                let width = width_of(dc, label, f.tiny_semi) + s(30);
+                let pill = RECT {
+                    left: monitor.right - s(16) - width,
+                    top: monitor.top + s(10),
+                    right: monitor.right - s(16),
+                    bottom: monitor.top + s(30),
+                };
+                shape(
+                    dc,
+                    pill,
+                    s(10),
+                    t.status_fill(tone),
+                    Some(t.status_border(tone)),
+                );
+                circle(dc, pill.left + s(9), pill.top + s(7), s(6), tone);
+                text(
+                    dc,
+                    label,
+                    RECT {
+                        left: pill.left + s(19),
+                        top: pill.top,
+                        right: pill.right,
+                        bottom: pill.bottom,
+                    },
+                    f.tiny_semi,
+                    tone,
+                    LEFT_LINE,
+                );
+                let status = desktop.status.lock().unwrap().clone();
+                text(
+                    dc,
+                    &status,
+                    at(monitor, 16, 36, RIGHT - LEFT - 32, 22),
+                    f.body_semi,
+                    TEXT,
+                    LEFT_LINE,
+                );
+                text(
+                    dc,
+                    &format!(
+                        "Polling every {}s · pushing every {}s · preferences.toml",
+                        desktop.base.poll_seconds, desktop.base.update_seconds
+                    ),
+                    at(monitor, 16, 62, RIGHT - LEFT - 32, 16),
+                    f.tiny,
+                    MUTED,
+                    LEFT_LINE,
                 );
             }
         }
     }
 }
-
 /// Background behind an owner-drawn button, so its rounded corners blend in.
 fn behind(id: i32, t: Theme, banner_bottom: i32, y: i32) -> u32 {
     match id {
@@ -2294,21 +3451,21 @@ unsafe fn draw_combo_item(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
         );
         let label = String::from_utf16_lossy(&buf[..len as usize]);
         if !in_edit && selected {
-            let pill = rect(
-                r.left + 4,
-                r.top + 2,
-                (r.right - r.left - 8).max(4),
-                (r.bottom - r.top - 4).max(4),
-            );
+            let pill = RECT {
+                left: r.left + s(4),
+                top: r.top + s(3),
+                right: r.right - s(4),
+                bottom: r.bottom - s(3),
+            };
             shape(dc, pill, t.button_radius, t.nav_selected, None);
             shape(
                 dc,
-                rect(
-                    pill.left,
-                    pill.top + 4,
-                    3,
-                    (pill.bottom - pill.top - 8).max(4),
-                ),
+                RECT {
+                    left: pill.left + s(4),
+                    top: pill.top + s(4),
+                    right: pill.left + s(7),
+                    bottom: pill.bottom - s(4),
+                },
                 1,
                 t.accent,
                 None,
@@ -2318,12 +3475,12 @@ unsafe fn draw_combo_item(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
         text(
             dc,
             &label,
-            rect(
-                r.left + pad,
-                r.top,
-                (r.right - r.left - pad - 8).max(0),
-                r.bottom - r.top,
-            ),
+            RECT {
+                left: r.left + s(pad),
+                top: r.top,
+                right: r.right - s(8),
+                bottom: r.bottom,
+            },
             if !in_edit && selected {
                 f.body_semi
             } else {
@@ -2379,9 +3536,9 @@ unsafe extern "system" fn paint_combo(
         if !focused {
             line(
                 dc,
-                r.left + 4,
+                r.left + s(4),
                 r.bottom - 1,
-                r.right - 4,
+                r.right - s(4),
                 r.bottom,
                 t.field_bottom,
             );
@@ -2396,7 +3553,12 @@ unsafe extern "system" fn paint_combo(
                 text(
                     dc,
                     &label,
-                    rect(10, 0, (r.right - 34).max(0), r.bottom),
+                    RECT {
+                        left: r.left + s(12),
+                        top: r.top,
+                        right: r.right - s(34),
+                        bottom: r.bottom,
+                    },
                     font as HFONT,
                     TEXT,
                     LEFT_LINE,
@@ -2405,9 +3567,18 @@ unsafe extern "system" fn paint_combo(
         }
         text(
             dc,
-            "▾",
-            rect(r.right - 26, 0, 22, r.bottom),
-            font as HFONT,
+            "\u{E70D}",
+            RECT {
+                left: r.right - s(28),
+                top: r.top,
+                right: r.right - s(8),
+                bottom: r.bottom,
+            },
+            if let Some(ptr) = Some(ptr).filter(|p| !p.is_null()) {
+                (*ptr).fonts().glyph_small
+            } else {
+                font as HFONT
+            },
             if focused { t.accent } else { MUTED },
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
@@ -2438,86 +3609,100 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
             let index = (id - THEME_BTN) as usize;
             let (key, name, canvas_c, rail_c, tile_c) = THEMES[index];
             let selected = desktop.prefs.lock().unwrap().theme == key;
+            let hot = desktop.hot.get() == item.hwndItem;
             shape(
                 dc,
                 r,
-                t.tile_radius,
-                t.tile,
-                Some(if selected { t.accent } else { t.tile_border }),
+                t.tile_radius + 2,
+                if selected {
+                    mix(t.tile, t.accent, 0.10)
+                } else if hot {
+                    t.tile_hover
+                } else {
+                    t.tile
+                },
+                Some(if selected {
+                    t.accent
+                } else if hot {
+                    t.field_bottom
+                } else {
+                    t.tile_border
+                }),
             );
-            // Mini theme swatch preview on the left.
-            let sw = rect(r.left + 10, r.top + 12, 40, 40);
+            // Mini window swatch: canvas, rail, a tile and the accent.
+            let sw = at(r, 12, 14, 40, 40);
             shape(dc, sw, 4, canvas_c, Some(t.tile_border));
-            shape(dc, rect(sw.left + 2, sw.top + 2, 11, 36), 2, rail_c, None);
-            shape(dc, rect(sw.left + 16, sw.top + 6, 20, 12), 2, tile_c, None);
-            shape(
-                dc,
-                rect(sw.left + 16, sw.top + 22, 14, 10),
-                2,
-                t.accent,
-                None,
-            );
+            shape(dc, at(sw, 0, 0, 12, 40), 3, rail_c, None);
+            shape(dc, at(sw, 16, 8, 20, 10), 2, tile_c, None);
+            shape(dc, at(sw, 16, 22, 12, 8), 2, t.accent, None);
             text(
                 dc,
                 name,
-                rect(r.left + 58, r.top + 14, r.right - r.left - 78, 18),
+                at(r, 62, 22, RIGHT - LEFT - 200, 18),
                 if selected { f.body_semi } else { f.body },
-                TEXT,
-                LEFT_LINE,
-            );
-            text(
-                dc,
-                if selected { "Active" } else { "Select" },
-                rect(r.left + 58, r.top + 33, r.right - r.left - 78, 16),
-                f.tiny,
-                if selected { t.accent } else { MUTED },
+                if selected || hot { TEXT } else { SOFT },
                 LEFT_LINE,
             );
             if selected {
-                circle(dc, r.right - 22, r.top + 8, 14, t.accent);
+                let check = at(r, 124, 26, 18, 18);
+                shape(dc, check, 9, t.accent, None);
                 text(
                     dc,
-                    "✓",
-                    rect(r.right - 22, r.top + 8, 15, 15),
-                    f.tiny_semi,
+                    "\u{E73E}",
+                    check,
+                    f.glyph_small,
                     ON_ACCENT,
-                    center,
+                    DT_CENTER | DT_SINGLELINE | DT_VCENTER,
                 );
             }
         } else if (ACCENT_BTN..ACCENT_BTN + ACCENTS.len() as i32).contains(&id) {
             let index = (id - ACCENT_BTN) as usize;
-            let (key, name, color, _) = ACCENTS[index];
+            let (key, name, color, _, _) = ACCENTS[index];
             let selected = desktop.prefs.lock().unwrap().accent == key;
+            let hot = desktop.hot.get() == item.hwndItem;
             shape(
                 dc,
                 r,
-                t.button_radius,
-                if selected { t.nav_selected } else { t.tile },
+                t.button_radius + 1,
+                if selected {
+                    mix(t.tile, color, 0.12)
+                } else if hot {
+                    t.tile_hover
+                } else {
+                    t.tile
+                },
                 Some(if selected { color } else { t.tile_border }),
             );
             circle(
                 dc,
-                r.left + 12,
-                r.top + (r.bottom - r.top - 14) / 2,
-                14,
+                at(r, 12, 12, 14, 14).left,
+                at(r, 12, 12, 14, 14).top,
+                s(14),
                 color,
             );
             text(
                 dc,
                 name,
-                rect(r.left + 32, r.top, r.right - r.left - 38, r.bottom - r.top),
+                at(r, 32, 0, RIGHT - LEFT - 44, 38),
                 if selected { f.small_semi } else { f.small },
-                if selected { TEXT } else { SOFT },
+                if selected || hot { TEXT } else { SOFT },
                 LEFT_LINE,
             );
         } else if (CORNER_BTN..CORNER_BTN + 2).contains(&id) {
             let sharp = id == CORNER_BTN + 1;
             let selected = desktop.prefs.lock().unwrap().sharp_corners == sharp;
+            let hot = desktop.hot.get() == item.hwndItem;
             shape(
                 dc,
                 r,
-                if sharp { 2 } else { 6 },
-                if selected { t.nav_selected } else { t.tile },
+                if sharp { 2 } else { 8 },
+                if selected {
+                    mix(t.tile, t.accent, 0.12)
+                } else if hot {
+                    t.tile_hover
+                } else {
+                    t.tile
+                },
                 Some(if selected { t.accent } else { t.tile_border }),
             );
             text(
@@ -2548,114 +3733,135 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 )
             });
             let selected = desktop.selected_choice() == Some(index);
+            let hot = desktop.hot.get() == item.hwndItem;
             shape(
                 dc,
                 r,
                 t.tile_radius,
-                if selected { t.accent } else { t.tile },
-                Some(if selected { t.accent } else { t.tile_border }),
+                t.tile,
+                Some(if selected {
+                    t.accent
+                } else if hot {
+                    t.field_bottom
+                } else {
+                    t.tile_border
+                }),
             );
+            let inset = if selected { s(3) } else { s(2) };
+            let inner = RECT {
+                left: r.left + inset,
+                top: r.top + inset,
+                right: r.right - inset,
+                bottom: r.bottom - inset,
+            };
             match picture {
-                Some(thumb) => draw_thumbnail(dc, &thumb, r.left + 2, r.top + 2),
+                Some(thumb) => {
+                    let _ = &inner;
+                    draw_thumbnail(dc, &thumb, r.left + inset, r.top + inset)
+                }
                 None => {
-                    text(dc, "Loading…", r, f.tiny, FAINT, center);
+                    shape(dc, inner, t.tile_radius - 1, t.nav_hover, None);
                 }
             }
-            let chip_label = if index == 0 {
-                "Default".to_string()
-            } else {
-                (index + 1).to_string()
-            };
-            let measured = text(
-                dc,
-                &chip_label,
-                rect(0, 0, 200, 16),
-                f.tiny_semi,
-                TEXT,
-                DT_SINGLELINE | DT_CALCRECT,
-            );
-            let chip = rect(
-                r.left + 6,
-                r.bottom - 22,
-                measured.right - measured.left + 12,
-                16,
-            );
-            shape(
-                dc,
-                chip,
-                4,
-                if selected {
-                    t.accent
-                } else {
-                    rgb(0x14, 0x14, 0x14)
-                },
-                None,
-            );
-            text(
-                dc,
-                &chip_label,
-                chip,
-                f.tiny_semi,
-                if selected { ON_ACCENT } else { TEXT },
-                center,
-            );
-            if selected {
-                circle(dc, r.right - 22, r.top + 6, 16, t.accent);
+            if index == 0 {
+                let width = width_of(dc, "Default", f.tiny_semi) + s(12);
+                let badge = RECT {
+                    left: r.left + s(5),
+                    top: r.bottom - s(21),
+                    right: r.left + s(5) + width,
+                    bottom: r.bottom - s(5),
+                };
+                shape(dc, badge, 4, rgb(0x12, 0x12, 0x14), None);
                 text(
                     dc,
-                    "✓",
-                    rect(r.right - 22, r.top + 6, 17, 17),
-                    f.small_semi,
-                    ON_ACCENT,
-                    center,
+                    "Default",
+                    badge,
+                    f.tiny_semi,
+                    TEXT,
+                    DT_CENTER | DT_SINGLELINE | DT_VCENTER,
                 );
             }
-            if pressed {
-                InvertRect(dc, &rect(r.left + 2, r.top + 2, w - 4, h - 4));
+            if selected {
+                let check = RECT {
+                    left: r.right - s(22),
+                    top: r.top + s(4),
+                    right: r.right - s(4),
+                    bottom: r.top + s(22),
+                };
+                shape(dc, check, 9, t.accent, None);
+                text(
+                    dc,
+                    "\u{E73E}",
+                    check,
+                    f.glyph_small,
+                    ON_ACCENT,
+                    DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+                );
             }
         } else if (NAV..NAV + PAGES.len() as i32).contains(&id) {
             let page = (id - NAV) as usize;
             let selected = page == desktop.page.get();
-            if selected || pressed {
-                shape(dc, r, t.button_radius, t.nav_selected, None);
+            let hot = desktop.hot.get() == item.hwndItem;
+            if selected || hot {
+                shape(
+                    dc,
+                    r,
+                    t.button_radius,
+                    if selected {
+                        t.nav_selected
+                    } else {
+                        t.nav_hover
+                    },
+                    selected.then(|| mix(t.rail, t.accent, 0.22)),
+                );
             }
             if selected {
-                shape(dc, rect(r.left, r.top + 9, 3, 18), 1, t.accent, None);
+                shape(dc, at(r, 0, 8, 3, 18), 2, t.accent, None);
             }
             text(
                 dc,
-                &label,
-                rect(r.left + 14, r.top, 120, r.bottom - r.top),
-                if selected { f.body_semi } else { f.body },
-                if selected {
-                    rgb(0xff, 0xff, 0xff)
-                } else {
-                    SOFT
+                NAV_GLYPHS[page],
+                RECT {
+                    left: r.left + s(14),
+                    top: r.top,
+                    right: r.left + s(36),
+                    bottom: r.bottom,
                 },
+                f.glyph,
+                if selected {
+                    t.accent
+                } else if hot {
+                    SOFT
+                } else {
+                    MUTED
+                },
+                DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+            );
+            text(
+                dc,
+                &label,
+                RECT {
+                    left: r.left + s(42),
+                    top: r.top,
+                    right: r.right - s(10),
+                    bottom: r.bottom,
+                },
+                if selected { f.body_semi } else { f.body },
+                if selected || hot { TEXT } else { SOFT },
                 LEFT_LINE,
             );
-            if page == IMAGES {
-                let count = desktop.prefs.lock().unwrap().overrides().len();
-                if count > 0 {
-                    let chip = rect(r.right - 36, r.top + 9, 26, 18);
-                    shape(dc, chip, 9, t.tile, Some(t.tile_border));
-                    text(
-                        dc,
-                        &count.to_string(),
-                        chip,
-                        f.tiny,
-                        rgb(0x9e, 0x9e, 0x9e),
-                        center,
-                    );
-                }
-            }
             if page == UPDATES_PAGE
                 && matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_))
             {
-                circle(dc, r.right - 20, r.top + 15, 7, t.accent);
+                circle(dc, r.right - s(18), r.top + s(13), s(7), t.accent);
             }
         } else if matches!(id, RELEASE_NOTES | UPDATE_NOTES) {
-            let measured = text(dc, &label, r, f.small_semi, t.accent, center);
+            let ink = if desktop.hot.get() == item.hwndItem {
+                t.accent_hover
+            } else {
+                t.accent
+            };
+            let measured = text(dc, &label, r, f.small_semi, ink, center);
             let y = measured.bottom + (r.bottom - r.top - (measured.bottom - measured.top)) / 2 - 1;
             let width = measured.right - measured.left;
             let x = r.left + (r.right - r.left - width) / 2;
@@ -2665,59 +3871,111 @@ unsafe fn draw_button(desktop: &Desktop, item: &DRAWITEMSTRUCT) {
                 y.min(r.bottom - 3),
                 x + width,
                 y.min(r.bottom - 3) + 1,
-                t.accent,
+                ink,
             );
         } else {
-            let primary = id == SAVE
-                || id == UPDATE_NOW
-                || (id == UPDATE_ACTION
-                    && matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_)));
-            let (face, border, color, font) = if primary {
-                (
-                    if pressed { t.accent_pressed } else { t.accent },
-                    None,
-                    ON_ACCENT,
-                    if id == UPDATE_NOW {
-                        f.small_semi
-                    } else {
-                        f.body_semi
-                    },
-                )
+            let disabled = item.itemState & ODS_DISABLED != 0;
+            let hot = desktop.hot.get() == item.hwndItem && !disabled;
+            let available = matches!(*desktop.update.lock().unwrap(), UpdateState::Available(_));
+            let primary = id == SAVE || id == UPDATE_NOW || (id == UPDATE_ACTION && available);
+            if primary {
+                let fill = if disabled {
+                    mix(t.tile, t.accent, 0.28)
+                } else if pressed {
+                    t.accent_pressed
+                } else if hot {
+                    t.accent_hover
+                } else {
+                    t.accent
+                };
+                shape(dc, r, t.button_radius, fill, None);
+                text(
+                    dc,
+                    &label,
+                    r,
+                    f.body_semi,
+                    if disabled { DISABLED } else { ON_ACCENT },
+                    center,
+                );
             } else if id == EXIT {
-                (
-                    t.tile,
-                    Some(t.tile_border),
-                    rgb(0xbc, 0xbc, 0xbc),
+                if hot || pressed {
+                    shape(
+                        dc,
+                        r,
+                        t.button_radius,
+                        if pressed {
+                            t.tile_pressed
+                        } else {
+                            t.tile_hover
+                        },
+                        None,
+                    );
+                }
+                text(
+                    dc,
+                    &label,
+                    r,
                     f.body_semi,
-                )
-            } else if id == HIDE {
-                (
-                    if pressed { t.nav_selected } else { t.tile },
-                    Some(t.field_border),
-                    rgb(0xec, 0xec, 0xec),
-                    f.body_semi,
-                )
+                    if hot { TEXT } else { SOFT },
+                    center,
+                );
             } else {
-                (
-                    if pressed { t.nav_selected } else { t.tile },
-                    Some(t.field_border),
-                    TEXT,
+                let fill = if disabled {
+                    t.canvas
+                } else if pressed {
+                    t.tile_pressed
+                } else if hot {
+                    t.tile_hover
+                } else {
+                    t.tile
+                };
+                shape(
+                    dc,
+                    r,
+                    t.button_radius,
+                    fill,
+                    Some(if disabled {
+                        t.divider
+                    } else if hot {
+                        t.field_bottom
+                    } else {
+                        t.tile_border
+                    }),
+                );
+                text(
+                    dc,
+                    &label,
+                    r,
                     f.body_semi,
-                )
+                    if disabled { DISABLED } else { TEXT },
+                    center,
+                );
+            }
+        }
+        if item.itemState & ODS_FOCUS != 0
+            && item.itemState & ODS_NOFOCUSRECT == 0
+            && desktop.hot.get() != item.hwndItem
+            && !(CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id)
+        {
+            let ring = RECT {
+                left: r.left + s(2),
+                top: r.top + s(2),
+                right: r.right - s(2),
+                bottom: r.bottom - s(2),
             };
+            shape(dc, ring, t.button_radius, t.accent, None);
             shape(
                 dc,
-                r,
-                if id == UPDATE_NOW { 4 } else { t.button_radius },
-                face,
-                border,
+                RECT {
+                    left: r.left + s(3),
+                    top: r.top + s(3),
+                    right: r.right - s(3),
+                    bottom: r.bottom - s(3),
+                },
+                t.button_radius,
+                t.canvas,
+                None,
             );
-            text(dc, &label, r, font, color, center);
-        }
-        if item.itemState & ODS_FOCUS != 0 && !(CHOICE..CHOICE + MAX_CHOICES as i32).contains(&id) {
-            let mut focus = r;
-            InflateRect(&mut focus, -3, -3);
-            DrawFocusRect(dc, &focus);
         }
     }
 }
@@ -2737,8 +3995,23 @@ unsafe extern "system" fn paint_toggle(
         }
         if msg != WM_PAINT {
             let result = DefSubclassProc(hwnd, msg, w, l);
-            if matches!(msg, BM_SETCHECK | BM_SETSTATE | WM_SETFOCUS | WM_KILLFOCUS) {
+            if matches!(
+                msg,
+                BM_SETCHECK
+                    | BM_SETSTATE
+                    | WM_SETFOCUS
+                    | WM_KILLFOCUS
+                    | WM_MOUSEMOVE
+                    | WM_MOUSELEAVE
+            ) {
+                let parent = GetParent(hwnd);
+                let ptr = GetWindowLongPtrW(parent, GWLP_USERDATA) as *const Desktop;
+                track_hover(hwnd, msg, ptr);
                 InvalidateRect(hwnd, null_mut(), 0);
+            }
+            if msg == WM_SETCURSOR {
+                SetCursor(LoadCursorW(null_mut(), IDC_HAND));
+                return 1;
             }
             return result;
         }
@@ -2753,54 +4026,96 @@ unsafe extern "system" fn paint_toggle(
         let dc = BeginPaint(hwnd, &mut paint);
         let mut r = RECT::default();
         GetClientRect(hwnd, &mut r);
-        fill(dc, r, t.canvas);
-        shape(dc, r, t.tile_radius, t.tile, Some(t.tile_border));
-        let on = SendMessageW(hwnd, BM_GETCHECK, 0, 0) == 1;
         let enabled = IsWindowEnabled(hwnd) != 0;
+        let on = SendMessageW(hwnd, BM_GETCHECK, 0, 0) == 1;
+        let hovered = !ptr.is_null() && (*ptr).hot.get() == hwnd;
+
+        fill(dc, r, t.canvas);
+        let fill_color = if !enabled {
+            t.canvas
+        } else if hovered {
+            t.tile_hover
+        } else {
+            t.tile
+        };
+        shape(
+            dc,
+            r,
+            t.tile_radius,
+            fill_color,
+            Some(if hovered {
+                t.field_bottom
+            } else {
+                t.tile_border
+            }),
+        );
+        line(
+            dc,
+            r.left + s(t.tile_radius.max(8)),
+            r.top + 1,
+            r.right - s(t.tile_radius.max(8)),
+            r.top + 2,
+            mix(fill_color, 0xff_ff_ff, 0.05),
+        );
+
         let mut label = [0u16; 64];
         let len = GetWindowTextW(hwnd, label.as_mut_ptr(), label.len() as i32);
         let label = String::from_utf16_lossy(&label[..len as usize]);
+        let title_font = if ptr.is_null() {
+            font as HFONT
+        } else {
+            (*ptr).fonts().body_semi
+        };
+        let detail_font = if ptr.is_null() {
+            font as HFONT
+        } else {
+            (*ptr).fonts().tiny
+        };
         text(
             dc,
             &label,
-            rect(12, 0, r.right - 70, r.bottom),
-            font as HFONT,
-            if on && enabled {
-                rgb(0xed, 0xed, 0xed)
-            } else {
-                OFF_TEXT
-            },
+            at(r, 14, 6, 400, 16),
+            title_font,
+            if enabled { TEXT } else { DISABLED },
             LEFT_LINE,
         );
-        let sx = r.right - 12 - 36;
-        let sy = (r.bottom - 18) / 2;
-        if on {
+        let detail = if ptr.is_null() {
+            ""
+        } else {
+            toggle_detail(GetDlgCtrlID(hwnd))
+        };
+        if !detail.is_empty() {
+            text(
+                dc,
+                detail,
+                at(r, 14, 23, 460, 14),
+                detail_font,
+                MUTED,
+                LEFT_LINE,
+            );
+        }
+        switch(dc, t, r.right - s(54), r.top + s(11), on, enabled);
+
+        if SendMessageW(hwnd, BM_GETSTATE, 0, 0) & BST_FOCUS as isize != 0 && !hovered {
+            let ring = RECT {
+                left: r.left + s(1),
+                top: r.top + s(1),
+                right: r.right - s(1),
+                bottom: r.bottom - s(1),
+            };
+            shape(dc, ring, t.tile_radius, t.accent, None);
             shape(
                 dc,
-                rect(sx, sy, 36, 18),
-                9,
-                if enabled {
-                    t.accent
-                } else {
-                    rgb(0x4a, 0x6a, 0x7a)
+                RECT {
+                    left: r.left + s(2),
+                    top: r.top + s(2),
+                    right: r.right - s(2),
+                    bottom: r.bottom - s(2),
                 },
+                t.tile_radius,
+                fill_color,
                 None,
             );
-            circle(dc, sx + 22, sy + 4, 10, rgb(0x14, 0x14, 0x14));
-        } else {
-            shape(
-                dc,
-                rect(sx, sy, 36, 18),
-                9,
-                t.canvas,
-                Some(rgb(0x8c, 0x8c, 0x8c)),
-            );
-            circle(dc, sx + 4, sy + 4, 10, rgb(0xcf, 0xcf, 0xcf));
-        }
-        if SendMessageW(hwnd, BM_GETSTATE, 0, 0) & BST_FOCUS as isize != 0 {
-            let mut focus = r;
-            InflateRect(&mut focus, -3, -3);
-            DrawFocusRect(dc, &focus);
         }
         EndPaint(hwnd, &paint);
         0
@@ -2974,9 +4289,30 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                 return 1;
             }
             WM_CREATE => {
+                set_scale(preferred_scale(hwnd));
+                fit_client(hwnd);
                 build_controls(hwnd, desktop);
                 desktop.tray_ready.set(tray(hwnd, desktop.icon, NIM_ADD));
                 SetTimer(hwnd, 1, 500, None);
+            }
+            WM_DPICHANGED => {
+                set_scale(preferred_scale(hwnd));
+                let suggested = &*(l as *const RECT);
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                create_fonts(desktop);
+                apply_fonts(hwnd, desktop);
+                desktop.painted.borrow_mut().clear();
+                desktop.buffer.set(BackBuffer::EMPTY);
+                layout(hwnd, desktop);
+                InvalidateRect(hwnd, null_mut(), 0);
             }
             WM_TIMER | REFRESH => refresh(hwnd, desktop),
             WM_CLOSE => hide(hwnd, desktop),
@@ -3182,22 +4518,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
             }
             WM_DESTROY => {
                 tray(hwnd, desktop.icon, NIM_DELETE);
-                if let Some(f) = desktop.fonts.get() {
-                    for font in [
-                        f.brand,
-                        f.body,
-                        f.body_semi,
-                        f.small,
-                        f.small_semi,
-                        f.tiny,
-                        f.tiny_semi,
-                        f.details,
-                        f.mono,
-                    ] {
-                        DeleteObject(font);
-                    }
+                if let Some(fonts) = desktop.fonts.replace(None) {
+                    delete_fonts(fonts);
                 }
                 DeleteObject(desktop.field.get());
+                let buffer = desktop.buffer.get();
+                if !buffer.dc.is_null() {
+                    DeleteObject(buffer.bitmap);
+                    DeleteDC(buffer.dc);
+                }
+                desktop.buffer.set(BackBuffer::EMPTY);
                 PostQuitMessage(0);
             }
             _ if msg == desktop.taskbar_created => {
@@ -3238,7 +4568,8 @@ unsafe fn apply_theme(hwnd: HWND, desktop: &Desktop) {
         DeleteObject(old_brush);
         for (attribute, color) in [
             (DWMWA_CAPTION_COLOR, t.caption),
-            (DWMWA_BORDER_COLOR, t.card_border),
+            (DWMWA_BORDER_COLOR, t.tile_border),
+            (DWMWA_TEXT_COLOR, SOFT),
         ] {
             DwmSetWindowAttribute(
                 hwnd,

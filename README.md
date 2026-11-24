@@ -50,14 +50,19 @@ contract badge, and a page for each group of settings on the left:
   and wiki artwork on or off; pause sharing; start with Windows (keep the exe in one
   folder; if you move it, turn this off and on again); check for updates.
 - **Activity:** choose Playing, Listening to, Watching, or Competing in, what the member
-  list shows, and your own text for lines 2 and 3 (leave empty for automatic text).
+  list shows, your own text for lines 2 and 3 (leave empty for automatic text), and the
+  game name. A preview shows the line Discord will display next to your name.
 - **Images:** set your own picture for a ship or contract type. **Browse wiki artwork**
   opens the artwork picker; paste a copied line into the name box and click **Set**.
-- **Buttons:** up to two Discord buttons.
-- **Updates:** see whether a new version is out and install it.
+  Pictures are cached on disk, so the panel is instant the next time you open it.
+- **Buttons:** up to two Discord buttons, with a preview of how they look on your card.
+- **Appearance:** four themes, six accent colours, and rounded or sharp corners.
+- **Updates:** see whether a new version is out, how releases are verified, and what the
+  presence monitor is doing.
 
 Toggles and dropdowns apply immediately; text fields and buttons apply when you click
-**Apply**.
+**Apply**. The panel is per-monitor DPI aware, so it stays sharp when Windows is set to
+125 % or 150 % scaling.
 
 ### Updates
 

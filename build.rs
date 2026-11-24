@@ -8,5 +8,5 @@ fn main() {
         embed_resource::NONE,
     )
     .manifest_required()
-    .expect("could not embed the Windows application icon");
+    .expect("could not embed the Windows application resources");
 }
