@@ -48,7 +48,6 @@ The extra 8 MB of working set is the shape cache (up to 192 entries) and is a de
 trade for 2.4× faster paints.
 
 ## Design system
-
 - **Surfaces:** `rail` < `canvas` < `tile` (`s1`) < `tile_hover` (`s2`) < `tile_pressed` (`s3`),
   with `field` sunk below the canvas. Separation comes from `tile_border` plus a 1 px top
   sheen, not from heavy outlines.
@@ -64,10 +63,50 @@ trade for 2.4× faster paints.
   control underlines carry the boundary (`#8B8B8B`-class, ≥ 3:1 non-text), and disabled
   text is a separate token so "off" no longer looks "disabled".
 
+## Second pass (design review with Opus 5.5 and Gemini 4 Neon)
+
+Both advisors reviewed the shipped screenshots and the diff. Fixed from their list:
+
+- **DPI leaks:** footer rule and crease, `CB_SETITEMHEIGHT`, and the Images link field
+  (device coordinates were being fed back through `rect()`).
+- **Overflow:** Appearance tiles now fit 657 px exactly (156/10 and 102/9 strides).
+- **Banner:** actions centred in the 34 px banner; compact hero keeps 12 px bottom padding.
+- **Buttons page:** one rhythm for both slots (`header, 6, field, divider`), so the first
+  slot's inputs no longer sit on the divider.
+- **Focus:** 2 px frame along the inside edge instead of two filled rounded rects that
+  erased the control's text when tabbing.
+- **Apply:** primary only while an edit differs from the saved preferences
+  (`edits_dirty()` compares text controls on `EN_CHANGE`), so the green button means
+  something again.
+- **Quit:** outlined, left-aligned, muted — it reads as a button instead of floating text.
+- **Copy:** "every 30 minutes" everywhere, no triple version display on Updates, short
+  status labels on the monitor pill, and the Activity example follows the chosen verb.
+- **Card:** timer plus a channel chip instead of repeating the ship, concentric pill dot
+  and halo, accent-tinted idle art well with a specular rim, shadow that ramps from dark
+  (near the card) to light, section rules that fade out.
+- **Images:** the link field follows the last thumbnail row, so short galleries have no
+  dead gap.
+
+Deliberate deviations from the advice:
+
+- **Card toggles stay as individual tiles.** Grouping them into two surfaces would look
+  tighter, but each tile is exactly the control's hit area; a grouped card would need the
+  checkbox window to become borderless and to know its position in the group, for a gain
+  that is smaller than the regression risk.
+- **Mission badges keep the circular mask** in the picture grid, because that is how
+  Discord draws a contract badge in the small-image slot; ships keep the rounded square.
+- **No dirty-state "All changes saved" caption.** The Apply button changing weight is the
+  signal; a second piece of text next to it adds noise to the footer.
+
 ## Verification
 
 - `cargo build --release`, `cargo clippy --all-targets`, `cargo fmt --check`, `cargo test`
-  (58 unit + 8 content + 4 replay tests) all clean.
+  (58 unit + 6 panel layout + 8 content + 4 replay tests) all clean.
+- The panel tests pin the layout invariants: no page may extend past `FOOTER_TOP`
+  at either card height, the ninth image column must stay inside `RIGHT`, every card
+  toggle must have a description, and colour mixing/elapsed formatting stay exact.
+  Writing them caught a real defect: the Images helper text was clipped when the
+  update banner was showing.
 - Screenshots of all six pages at 100 % and 150 %, plus the update-banner state and a
   populated card, in `scripts/screenshot.ps1` output.
 - Paint benchmark above.

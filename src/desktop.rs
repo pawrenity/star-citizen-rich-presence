@@ -2121,7 +2121,6 @@ unsafe fn paint(hwnd: HWND, desktop: &Desktop) {
         let hint = match desktop.page.get() {
             ACTIVITY => "Dropdowns save instantly · text fields need Apply",
             BUTTONS => "Text fields and links need Apply",
-            IMAGES => "Uploaded pictures are resized and public",
             _ => "",
         };
         if !hint.is_empty() {
@@ -3139,14 +3138,20 @@ unsafe fn paint_page(dc: HDC, desktop: &Desktop, top: i32) {
                     );
                 }
                 let link = link_frame(top, image_rows(desktop));
+                let banner = desktop.banner.get();
+                let helper = if banner {
+                    "Uploads are resized and hosted publicly."
+                } else {
+                    "Click a picture to use it. Uploads are resized and hosted publicly so Discord can show them."
+                };
                 text(
                     dc,
-                    "Click a picture to use it. Uploads are resized and hosted publicly so Discord can show them.",
+                    helper,
                     RECT {
                         left: s(LEFT),
                         top: link.bottom + s(10),
                         right: s(RIGHT),
-                        bottom: link.bottom + s(42),
+                        bottom: link.bottom + s(if banner { 28 } else { 42 }),
                     },
                     f.small,
                     MUTED,
@@ -4890,5 +4895,127 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
         }
         desktop.painted.borrow_mut().clear();
         refresh(hwnd, desktop);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaling_is_identity_at_96_dpi() {
+        assert_eq!(s(0), 0);
+        assert_eq!(s(42), 42);
+        let r = rect(10, 20, 30, 40);
+        assert_eq!((r.left, r.top, r.right, r.bottom), (10, 20, 40, 60));
+        let child = at(r, 4, 6, 8, 10);
+        assert_eq!(
+            (child.left, child.top, child.right, child.bottom),
+            (14, 26, 22, 36)
+        );
+    }
+
+    #[test]
+    fn colours_mix_and_lighten() {
+        assert_eq!(mix(0x000000, 0xff_ff_ff, 0.0), 0x000000);
+        assert_eq!(mix(0x000000, 0xff_ff_ff, 1.0), 0xff_ff_ff);
+        assert_eq!(mix(0x000000, 0xff_ff_ff, 0.5), 0x80_80_80);
+        // Channel weights are independent and clamped.
+        assert_eq!(
+            mix(rgb(0x10, 0x20, 0x30), rgb(0x10, 0x20, 0x30), 0.9),
+            rgb(0x10, 0x20, 0x30)
+        );
+        assert_eq!(lighten(0x000000, 0.0), 0x000000);
+        assert_eq!(lighten(0xff_ff_ff, 1.0), 0xff_ff_ff);
+    }
+
+    #[test]
+    fn elapsed_has_no_padding_noise() {
+        let started = now() - 3661;
+        assert_eq!(elapsed(started), "1:01:01");
+        let recent = now() - 65;
+        assert_eq!(elapsed(recent), "1:05");
+        // Clock skew must not produce a negative timer.
+        assert_eq!(elapsed(now() + 600), "0:00");
+    }
+
+    #[test]
+    fn every_card_toggle_has_a_description() {
+        for (id, _, _, _, _) in CARD_TILES {
+            assert!(
+                !toggle_detail(id).is_empty(),
+                "toggle {id} has no description"
+            );
+        }
+        let mut ids: Vec<i32> = CARD_TILES.iter().map(|(id, ..)| *id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), CARD_TILES.len(), "duplicate toggle ids");
+    }
+
+    #[test]
+    fn every_page_fits_above_the_footer() {
+        // The panel is designed for a 588 px client; the footer starts at 540.
+        for banner in [false, true] {
+            let top = page_top(banner);
+            let limit = s(FOOTER_TOP);
+
+            // Card: the last toggle row.
+            assert!(
+                tile_rect(top, 0, 5, true).bottom <= limit,
+                "card page overflow"
+            );
+
+            // Activity: the fifth settings row and the pinned preview card.
+            assert!(
+                activity_row(top, 4).bottom <= limit,
+                "activity rows overflow"
+            );
+            if !banner {
+                let preview = rect(LEFT, FOOTER_TOP - 78, RIGHT - LEFT, 64);
+                assert!(preview.bottom <= limit, "activity preview overflow");
+            }
+
+            // Images: link field below the tallest grid plus its helper text.
+            let helper = if banner { 28 } else { 42 };
+            assert!(
+                link_frame(top, 3).bottom + s(helper) <= limit,
+                "images overflow"
+            );
+            assert!(choice_rect(top, 26).bottom <= link_frame(top, 3).top);
+
+            // Buttons: group, then the two preview cards.
+            assert!(buttons_box(top).bottom < top + 206);
+            assert!(
+                rect(LEFT, top + 224, 1, 140).bottom <= limit,
+                "buttons overflow"
+            );
+
+            // Appearance: the control sample strip.
+            assert!(
+                rect(LEFT, top + 280, 1, 56).bottom <= limit,
+                "appearance overflow"
+            );
+
+            // Updates: hero, diagnostics and the monitor card.
+            assert!(updates_hero(top).bottom <= top + 144);
+            assert!(
+                rect(LEFT, top + 276, 1, 96).bottom <= limit,
+                "updates overflow"
+            );
+        }
+    }
+
+    #[test]
+    fn images_grid_never_overflows_its_column() {
+        let top = page_top(false);
+        let right = choice_rect(top, 8).right;
+        assert!(
+            right <= s(RIGHT),
+            "ninth tile ends at {right}, past {}",
+            s(RIGHT)
+        );
+        // Three rows of tiles stay above the link field.
+        assert!(choice_rect(top, 26).bottom < link_frame(top, 3).top);
     }
 }
