@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.95"
 description = "Read-only, log-driven Discord Rich Presence for Star Citizen"
 license = "MIT"
-repository = "https://github.com/Clippii/star-citizen-rich-presence"
+repository = "https://github.com/pawrenity/star-citizen-rich-presence"
 
 [dependencies]
 anyhow = "1"

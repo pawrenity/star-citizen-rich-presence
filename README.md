@@ -57,7 +57,7 @@ contract badge, and a page for each group of settings on the left:
   Pictures are cached on disk, so the panel is instant the next time you open it.
 - **Buttons:** up to two Discord buttons, with a preview of how they look on your card.
 - **Appearance:** four themes, six accent colours, and rounded or sharp corners.
-- **Updates:** see whether a new version is out, how releases are verified, and what the
+- **Updates:** see whether a new version is out, how downloads are checked, and what the
   presence monitor is doing.
 
 Toggles and dropdowns apply immediately; text fields and buttons apply when you click
@@ -68,7 +68,9 @@ Toggles and dropdowns apply immediately; text fields and buttons apply when you 
 
 When a new version is released, a banner appears at the top of the control panel. If you
 used the installer, **Update now** downloads the new installer, checks it against the
-release's `SHA256SUMS.txt`, installs it, and reopens the app. Portable copies link to the
+release's `SHA256SUMS.txt` to catch a corrupted or incomplete download, installs it, and
+reopens the app. Both files come from the same GitHub release, so this check does not
+prove the release itself is genuine. Portable copies link to the
 release page instead. Turn checks off with **Check for updates automatically** or
 `check_for_updates = false` in `scrp.toml`.
 
@@ -319,7 +321,7 @@ made-up, anonymised session built from real 4.10 event shapes. Details and limit
 | `artwork` | Ship and contract artwork, contract types, image overrides |
 | `net` | Minimal HTTPS downloads over Windows WinHTTP |
 | `thumbnail` | Decoding and masking preview artwork |
-| `update` | GitHub release checks, checksum verification, silent install |
+| `update` | GitHub release checks, download checksum check, silent install |
 | `config` | Command-line flags, `scrp.toml`, validation |
 | `desktop` | Control panel (sidebar pages, live card preview, update banner), tray, start-with-Windows, saved preferences |
 | `discord` | Local Discord connection and activity messages |

@@ -4,7 +4,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use star_citizen_rich_presence::{
     artwork,
-    config::CardButton,
+    config::{CardButton, custom_text_too_short},
     net,
     thumbnail::{self, Mask, Thumbnail},
     update::{self, Release},
@@ -60,6 +60,8 @@ const PROFILE: i32 = 106;
 const CONTRACTS: i32 = 107;
 const CUSTOM: i32 = 108;
 const SAVE: i32 = 109;
+/// How long a failed artwork download waits before it is requested again.
+const ARTWORK_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 const HIDE: i32 = 110;
 const EXIT: i32 = 111;
 const NOTICES: i32 = 112;
@@ -580,8 +582,8 @@ struct Desktop {
     preview: Arc<Mutex<Option<Snapshot>>>,
     update: Arc<Mutex<UpdateState>>,
     upload: Arc<Mutex<UploadState>>,
-    /// Decoded artwork by URL; `None` while loading or after a failure.
-    thumbnails: Arc<Mutex<HashMap<String, Option<Thumbnail>>>>,
+    /// Decoded artwork by URL. Missing while loading; `Err` holds the time of a failure, after which it is retried.
+    thumbnails: Arc<Mutex<HashMap<String, Result<Thumbnail, Instant>>>>,
     requested: std::cell::RefCell<HashSet<String>>,
     /// Settings from scrp.toml, for the effective verb and update policy.
     base: Config,
@@ -1014,7 +1016,9 @@ pub(super) fn run(start_hidden: bool) -> Result<()> {
         }
         let running = Arc::new(AtomicBool::new(true));
 
-        // Update checks: shortly after start, then every 30 minutes, while enabled.
+        // Update checks: shortly after start, then every 30 minutes, while enabled in the panel.
+        // scrp.toml's `check_for_updates = false` turns checks off entirely; the panel toggle
+        // only works within that (the checkbox and Check now are gated the same way).
         if config.check_for_updates {
             let prefs = Arc::clone(&prefs);
             let state = Arc::clone(&update_state);
@@ -1999,8 +2003,18 @@ fn want_thumbnail(
     mask: Mask,
 ) -> Option<Thumbnail> {
     let key = format!("{width}x{height}:{url}");
-    if let Some(found) = desktop.thumbnails.lock().unwrap().get(&key) {
-        return found.clone();
+    {
+        let mut cache = desktop.thumbnails.lock().unwrap();
+        match cache.get(&key) {
+            Some(Ok(found)) => return Some(found.clone()),
+            Some(Err(failed)) if failed.elapsed() < ARTWORK_RETRY => return None,
+            Some(Err(_)) => {
+                // The failed attempt is old enough to retry.
+                cache.remove(&key);
+                desktop.requested.borrow_mut().remove(&key);
+            }
+            None => {}
+        }
     }
     if !url.starts_with("https://") || !desktop.requested.borrow_mut().insert(key.clone()) {
         return None;
@@ -2009,7 +2023,7 @@ fn want_thumbnail(
     let url = url.to_owned();
     let handle = hwnd as isize;
     std::thread::spawn(move || {
-        let result = thumbnail::fetch_cached(&url, width, height, mask).ok();
+        let result = thumbnail::fetch_cached(&url, width, height, mask).map_err(|_| Instant::now());
         cache.lock().unwrap().insert(key, result);
         request_refresh(handle);
     });
@@ -4825,6 +4839,16 @@ unsafe fn update_prefs(hwnd: HWND, desktop: &Desktop, id: i32) {
             {
                 show_error(&error.to_string());
                 return;
+            }
+            for (field, label) in [
+                (DETAILS, "Line 2"),
+                (CUSTOM, "Line 3"),
+                (GAME_NAME, "Game name"),
+            ] {
+                if custom_text_too_short(&read_text(hwnd, field)) {
+                    show_error(&format!("{label} must be empty or at least 2 characters"));
+                    return;
+                }
             }
             buttons = Some(links);
         }

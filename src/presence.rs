@@ -35,7 +35,7 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
         Phase::Playing => ("Exploring the verse".into(), config.channel.clone()),
     };
     let mut snapshot = Snapshot {
-        name: limit(&crate::parser::strip_markup(&config.custom_name), 128),
+        name: custom_name(config),
         details,
         state: String::new(),
         large_image: "logo".into(),
@@ -145,17 +145,14 @@ pub fn snapshot(session: &Session, config: &Config, now: i64) -> Option<Snapshot
             "https://robertsspaceindustries.com/citizens/{handle}"
         ));
     }
-    snapshot.details =
-        if session.phase == Phase::Playing && !config.custom_details.trim().is_empty() {
-            limit(config.custom_details.trim(), 128)
-        } else {
-            // Defense in depth: log-derived text must never leak UI markup.
-            limit(&crate::parser::strip_markup(&snapshot.details), 128)
-        };
-    snapshot.state = if session.phase == Phase::Playing && !config.custom_state.trim().is_empty() {
-        limit(config.custom_state.trim(), 128)
-    } else {
-        limit(&crate::parser::strip_markup(&state), 128)
+    snapshot.details = match custom_line(&config.custom_details, session.phase) {
+        Some(custom) => custom,
+        // Defense in depth: log-derived text must never leak UI markup.
+        None => limit(&crate::parser::strip_markup(&snapshot.details), 128),
+    };
+    snapshot.state = match custom_line(&config.custom_state, session.phase) {
+        Some(custom) => custom,
+        None => limit(&crate::parser::strip_markup(&state), 128),
     };
     snapshot.large_text = limit(&crate::parser::strip_markup(&snapshot.large_text), 128);
     snapshot.small_text = limit(&crate::parser::strip_markup(&snapshot.small_text), 128);
@@ -293,6 +290,22 @@ fn limit(text: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}...", &text[..end])
+}
+
+/// Discord needs at least 2 characters; shorter custom names fall back to the app default.
+fn custom_name(config: &Config) -> String {
+    let name = crate::parser::strip_markup(&config.custom_name);
+    if name.chars().count() < 2 {
+        String::new()
+    } else {
+        limit(&name, 128)
+    }
+}
+
+/// Custom details/state apply only while playing, and only when they are at least 2 characters.
+fn custom_line(text: &str, phase: Phase) -> Option<String> {
+    let trimmed = text.trim();
+    (phase == Phase::Playing && trimmed.chars().count() >= 2).then(|| limit(trimmed, 128))
 }
 
 pub trait Transport {
@@ -629,5 +642,53 @@ mod tests {
         assert_eq!(later.details, "Exploring the verse");
         assert!(later.profile_url.is_none());
         assert!(limit(&"é".repeat(100), 128).len() <= 128);
+    }
+    #[test]
+    fn single_character_custom_text_falls_back_to_automatic_text() {
+        let mut s = Session::new(1);
+        s.apply(
+            Event::Login("Pilot".into()),
+            2,
+            &Locations::load(None).unwrap(),
+        );
+        s.apply(
+            Event::Mode("Persistent_Universe".into()),
+            3,
+            &Locations::load(None).unwrap(),
+        );
+        let config = Config {
+            custom_details: " a ".into(),
+            custom_state: "é".into(),
+            custom_name: "<b>x</b>".into(),
+            ..Config::default()
+        };
+        let card = snapshot(&s, &config, 4).unwrap();
+        assert_eq!(card.details, "Exploring the verse");
+        assert_eq!(card.state, config.channel);
+        assert_eq!(card.name, "");
+    }
+    #[test]
+    fn two_character_custom_text_is_used_trimmed() {
+        let mut s = Session::new(1);
+        s.apply(
+            Event::Login("Pilot".into()),
+            2,
+            &Locations::load(None).unwrap(),
+        );
+        s.apply(
+            Event::Mode("Persistent_Universe".into()),
+            3,
+            &Locations::load(None).unwrap(),
+        );
+        let config = Config {
+            custom_details: " Hauling ".into(),
+            custom_state: "ok".into(),
+            custom_name: "Verse Run".into(),
+            ..Config::default()
+        };
+        let card = snapshot(&s, &config, 4).unwrap();
+        assert_eq!(card.details, "Hauling");
+        assert_eq!(card.state, "ok");
+        assert_eq!(card.name, "Verse Run");
     }
 }

@@ -1,4 +1,4 @@
-//! Minimal HTTPS GET over WinHTTP (no extra dependencies).
+//! Minimal HTTPS GET and POST over WinHTTP (no extra dependencies).
 #![cfg(windows)]
 use anyhow::{Context, Result, bail, ensure};
 use std::ptr::{null, null_mut};
@@ -13,6 +13,14 @@ impl Drop for Handle {
     }
 }
 
+/// One request with its parents. Fields drop in declaration order, so the request closes
+/// before its connection, and the connection before its session.
+struct Exchange {
+    request: Handle,
+    _connection: Handle,
+    _session: Handle,
+}
+
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
 }
@@ -21,8 +29,9 @@ fn last_error(what: &str) -> anyhow::Error {
     anyhow::anyhow!("{what} failed: {}", std::io::Error::last_os_error())
 }
 
-/// HTTPS GET with redirects (GitHub downloads redirect to its CDN), up to `limit` bytes.
-pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
+/// Opens session, connection, and request for `method` on an HTTPS `url`. Timeouts are in
+/// milliseconds: resolve, connect, send, receive.
+fn open(method: &str, url: &str, timeouts: (i32, i32, i32, i32)) -> Result<Exchange> {
     let rest = url
         .strip_prefix("https://")
         .context("Only HTTPS is allowed")?;
@@ -44,7 +53,7 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
         if session.0.is_null() {
             return Err(last_error("WinHttpOpen"));
         }
-        WinHttpSetTimeouts(session.0, 10_000, 10_000, 15_000, 30_000);
+        WinHttpSetTimeouts(session.0, timeouts.0, timeouts.1, timeouts.2, timeouts.3);
         let connection = Handle(WinHttpConnect(
             session.0,
             wide(host).as_ptr(),
@@ -58,7 +67,7 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
         let accept = [any_type.as_ptr(), null()];
         let request = Handle(WinHttpOpenRequest(
             connection.0,
-            wide("GET").as_ptr(),
+            wide(method).as_ptr(),
             wide(&path).as_ptr(),
             null(),
             null(),
@@ -68,16 +77,23 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
         if request.0.is_null() {
             return Err(last_error("Opening the request"));
         }
-        let headers = wide("Accept: application/vnd.github+json\r\n");
-        if WinHttpSendRequest(request.0, headers.as_ptr(), u32::MAX, null(), 0, 0, 0) == 0
-            || WinHttpReceiveResponse(request.0, null_mut()) == 0
-        {
-            return Err(last_error("Downloading"));
-        }
+        Ok(Exchange {
+            request,
+            _connection: connection,
+            _session: session,
+        })
+    }
+}
+
+/// Checks for HTTP 200 and reads the response body, failing if it exceeds `limit` bytes.
+/// `party` names the server in error messages.
+fn read_body(request: &Handle, limit: usize, party: &str) -> Result<Vec<u8>> {
+    let request = request.0;
+    unsafe {
         let mut status = 0u32;
         let mut size = 4u32;
         WinHttpQueryHeaders(
-            request.0,
+            request,
             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             null(),
             (&mut status as *mut u32).cast(),
@@ -85,13 +101,13 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
             null_mut(),
         );
         if status != 200 {
-            bail!("Server answered HTTP {status}");
+            bail!("{party} answered HTTP {status}");
         }
         let mut body = Vec::new();
         loop {
             let mut available = 0u32;
-            if WinHttpQueryDataAvailable(request.0, &mut available) == 0 {
-                return Err(last_error("Reading"));
+            if WinHttpQueryDataAvailable(request, &mut available) == 0 {
+                return Err(last_error("Reading response"));
             }
             if available == 0 {
                 break;
@@ -99,24 +115,49 @@ pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
             let start = body.len();
             ensure!(
                 start + available as usize <= limit,
-                "Download is unexpectedly large"
+                "{party} response is unexpectedly large"
             );
             body.resize(start + available as usize, 0);
             let mut read = 0u32;
             if WinHttpReadData(
-                request.0,
+                request,
                 body[start..].as_mut_ptr().cast(),
                 available,
                 &mut read,
             ) == 0
             {
-                return Err(last_error("Reading"));
+                return Err(last_error("Reading response"));
             }
             body.truncate(start + read as usize);
         }
-        Ok::<_, anyhow::Error>(body)
+        Ok(body)
     }
-    .with_context(|| format!("Could not download {url}"))
+}
+
+/// HTTPS GET with redirects (GitHub downloads redirect to its CDN), up to `limit` bytes.
+pub fn get(url: &str, limit: usize) -> Result<Vec<u8>> {
+    fetch(url, limit).with_context(|| format!("Could not download {url}"))
+}
+
+fn fetch(url: &str, limit: usize) -> Result<Vec<u8>> {
+    let exchange = open("GET", url, (10_000, 10_000, 15_000, 30_000))?;
+    let headers = wide("Accept: application/vnd.github+json\r\n");
+    unsafe {
+        if WinHttpSendRequest(
+            exchange.request.0,
+            headers.as_ptr(),
+            u32::MAX,
+            null(),
+            0,
+            0,
+            0,
+        ) == 0
+            || WinHttpReceiveResponse(exchange.request.0, null_mut()) == 0
+        {
+            return Err(last_error("Downloading"));
+        }
+    }
+    read_body(&exchange.request, limit, "Server")
 }
 
 /// HTTPS multipart/form-data POST over WinHTTP, returning up to `limit` response bytes.
@@ -129,12 +170,6 @@ pub fn post_multipart(
     data: &[u8],
     limit: usize,
 ) -> Result<Vec<u8>> {
-    let rest = url
-        .strip_prefix("https://")
-        .context("Only HTTPS is allowed")?;
-    let (host, path) = rest
-        .split_once('/')
-        .map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
     let boundary = "----SCRPFormBoundary7MA4YWxkTrZu0gW";
     let mut payload = Vec::with_capacity(data.len() + 512);
     for (name, value) in fields {
@@ -153,60 +188,18 @@ pub fn post_multipart(
     );
     payload.extend_from_slice(data);
     payload.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    let total_len = u32::try_from(payload.len()).context("Upload is too large")?;
+    upload(url, boundary, &payload, limit).with_context(|| format!("Could not upload to {url}"))
+}
 
+fn upload(url: &str, boundary: &str, payload: &[u8], limit: usize) -> Result<Vec<u8>> {
+    let total_len = u32::try_from(payload.len()).context("Upload is too large")?;
+    let exchange = open("POST", url, (10_000, 10_000, 30_000, 60_000))?;
+    let headers = wide(&format!(
+        "Content-Type: multipart/form-data; boundary={boundary}\r\n"
+    ));
     unsafe {
-        let agent = wide(concat!(
-            "star-citizen-rich-presence/",
-            env!("CARGO_PKG_VERSION")
-        ));
-        let session = Handle(WinHttpOpen(
-            agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-            null(),
-            null(),
-            0,
-        ));
-        if session.0.is_null() {
-            return Err(last_error("WinHttpOpen"));
-        }
-        WinHttpSetTimeouts(session.0, 10_000, 10_000, 30_000, 60_000);
-        let connection = Handle(WinHttpConnect(
-            session.0,
-            wide(host).as_ptr(),
-            INTERNET_DEFAULT_HTTPS_PORT,
-            0,
-        ));
-        if connection.0.is_null() {
-            return Err(last_error("Connecting"));
-        }
-        let any_type = wide("*/*");
-        let accept = [any_type.as_ptr(), null()];
-        let request = Handle(WinHttpOpenRequest(
-            connection.0,
-            wide("POST").as_ptr(),
-            wide(&path).as_ptr(),
-            null(),
-            null(),
-            accept.as_ptr(),
-            WINHTTP_FLAG_SECURE,
-        ));
-        if request.0.is_null() {
-            return Err(last_error("Opening the request"));
-        }
-        let headers = wide(&format!(
-            "Content-Type: multipart/form-data; boundary={boundary}\r\n"
-        ));
-        if WinHttpSendRequest(
-            request.0,
-            headers.as_ptr(),
-            u32::MAX,
-            null(),
-            0,
-            total_len,
-            0,
-        ) == 0
-        {
+        let request = exchange.request.0;
+        if WinHttpSendRequest(request, headers.as_ptr(), u32::MAX, null(), 0, total_len, 0) == 0 {
             return Err(last_error("Sending upload headers"));
         }
         let mut written_total = 0usize;
@@ -214,7 +207,7 @@ pub fn post_multipart(
             let chunk = &payload[written_total..(written_total + 65_536).min(payload.len())];
             let mut written = 0u32;
             if WinHttpWriteData(
-                request.0,
+                request,
                 chunk.as_ptr().cast(),
                 chunk.len() as u32,
                 &mut written,
@@ -225,52 +218,11 @@ pub fn post_multipart(
             ensure!(written > 0, "Upload stalled");
             written_total += written as usize;
         }
-        if WinHttpReceiveResponse(request.0, null_mut()) == 0 {
+        if WinHttpReceiveResponse(request, null_mut()) == 0 {
             return Err(last_error("Waiting for upload response"));
         }
-        let mut status = 0u32;
-        let mut size = 4u32;
-        WinHttpQueryHeaders(
-            request.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            null(),
-            (&mut status as *mut u32).cast(),
-            &mut size,
-            null_mut(),
-        );
-        if status != 200 {
-            bail!("Upload host answered HTTP {status}");
-        }
-        let mut body = Vec::new();
-        loop {
-            let mut available = 0u32;
-            if WinHttpQueryDataAvailable(request.0, &mut available) == 0 {
-                return Err(last_error("Reading response"));
-            }
-            if available == 0 {
-                break;
-            }
-            let start = body.len();
-            ensure!(
-                start + available as usize <= limit,
-                "Upload response is unexpectedly large"
-            );
-            body.resize(start + available as usize, 0);
-            let mut read = 0u32;
-            if WinHttpReadData(
-                request.0,
-                body[start..].as_mut_ptr().cast(),
-                available,
-                &mut read,
-            ) == 0
-            {
-                return Err(last_error("Reading response"));
-            }
-            body.truncate(start + read as usize);
-        }
-        Ok::<_, anyhow::Error>(body)
     }
-    .with_context(|| format!("Could not upload to {url}"))
+    read_body(&exchange.request, limit, "Upload host")
 }
 
 fn validate_upload_url(url: &str) -> Result<String> {

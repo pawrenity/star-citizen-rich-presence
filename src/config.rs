@@ -72,7 +72,7 @@ pub struct Config {
     pub show_location: bool,
     pub show_ship: bool,
     pub show_party: bool,
-    /// Ask GitHub for a newer release on start and daily (desktop app only).
+    /// Ask GitHub for a newer release shortly after start, then every 30 minutes (desktop app only).
     pub check_for_updates: bool,
     pub show_artwork: bool,
     pub custom_state: String,
@@ -122,6 +122,13 @@ impl Default for Config {
             status_display: "name".into(),
         }
     }
+}
+
+/// Discord rejects activity text shorter than 2 characters. Empty text is fine (it means
+/// automatic text), so only a non-empty trimmed value with fewer than 2 characters is short.
+pub fn custom_text_too_short(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.is_empty() && trimmed.chars().count() < 2
 }
 
 impl Config {
@@ -274,5 +281,24 @@ mod tests {
         assert!(Args::try_parse_from(["scrp", "--log", "a", "--game-dir", "b"]).is_err());
         assert!(Args::try_parse_from(["scrp", "--check-discord", "--dry-run"]).is_err());
         assert!(Args::try_parse_from(["scrp", "--check-discord", "--replay", "a"]).is_err());
+    }
+    #[test]
+    fn custom_text_must_be_empty_or_at_least_two_characters() {
+        assert!(!custom_text_too_short(""));
+        assert!(!custom_text_too_short("   "));
+        assert!(custom_text_too_short("a"));
+        assert!(custom_text_too_short(" a "));
+        assert!(!custom_text_too_short("ab"));
+        assert!(!custom_text_too_short("é?"));
+        assert!(custom_text_too_short("é"));
+        // Startup must not fail on short custom text; presence falls back to automatic text.
+        Config {
+            custom_state: "x".into(),
+            custom_details: "Hauling".into(),
+            custom_name: String::new(),
+            ..Config::default()
+        }
+        .validate()
+        .unwrap();
     }
 }

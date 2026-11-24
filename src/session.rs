@@ -282,8 +282,15 @@ impl Session {
                 self.inventory_zone = None;
             }
             Event::PartyJoined(name) | Event::PartyActive(Some(name)) => {
+                let is_local = self
+                    .handle
+                    .as_ref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&name));
                 let party = self.party.get_or_insert_default();
-                if self.handle.as_ref() != Some(&name) && party.len() < 64 {
+                if !is_local
+                    && party.len() < 64
+                    && !party.iter().any(|m| m.eq_ignore_ascii_case(&name))
+                {
                     party.insert(name);
                 }
             }
@@ -291,10 +298,14 @@ impl Session {
                 self.party.get_or_insert_default();
             }
             Event::PartyLeft(name) => {
-                if self.handle.as_ref() == Some(&name) {
+                if self
+                    .handle
+                    .as_ref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&name))
+                {
                     self.party = None;
                 } else if let Some(party) = &mut self.party {
-                    party.remove(&name);
+                    party.retain(|member| !member.eq_ignore_ascii_case(&name));
                 }
             }
             Event::PartyEnded => self.party = None,
@@ -434,6 +445,27 @@ mod tests {
             &locations(),
         );
         assert!(s.location.is_none());
+    }
+    #[test]
+    fn party_handles_match_case_insensitively() {
+        let mut s = Session::new(0);
+        s.apply(Event::Login("Pilot".into()), 1, &locations());
+        s.apply(Event::PartyJoined("Friend".into()), 2, &locations());
+        s.apply(Event::PartyJoined("friend".into()), 3, &locations());
+        assert_eq!(s.party.as_ref().unwrap().len(), 1);
+        s.apply(Event::PartyLeft("FRIEND".into()), 4, &locations());
+        assert_eq!(s.party.as_ref().unwrap().len(), 0);
+        s.apply(Event::PartyJoined("pilot".into()), 5, &locations());
+        assert_eq!(s.party.as_ref().unwrap().len(), 0);
+    }
+    #[test]
+    fn lowercase_pilot_leaving_the_party_clears_it_for_login_pilot() {
+        let mut s = Session::new(0);
+        s.apply(Event::Login("Pilot".into()), 1, &locations());
+        s.apply(Event::PartyJoined("Friend".into()), 2, &locations());
+        // "pilot has left the party" from the log.
+        s.apply(Event::PartyLeft("pilot".into()), 3, &locations());
+        assert!(s.party.is_none());
     }
     #[test]
     fn teardown_clears_gameplay_and_preserves_session_time() {

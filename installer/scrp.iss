@@ -27,6 +27,8 @@ AppUpdatesURL=https://github.com/pawrenity/star-citizen-rich-presence/releases
 ; Per-user install: no administrator prompt, like the portable app.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; Updates reuse the original install mode (per-user or all-users) instead of creating a second copy.
+UsePreviousPrivileges=yes
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

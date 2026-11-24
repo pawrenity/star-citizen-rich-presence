@@ -2,7 +2,9 @@
 //!
 //! The only requests are to api.github.com (latest release) and, when the user clicks
 //! "Update now", the release's own installer and SHA256SUMS.txt. Nothing about the
-//! player is sent. The installer is verified against SHA256SUMS.txt before it runs.
+//! player is sent. The installer's SHA-256 must match SHA256SUMS.txt from the same release
+//! before it runs. That catches corrupted or incomplete downloads; both files come from the
+//! same GitHub release, so it does not prove the release itself is trustworthy.
 use anyhow::{Context, Result};
 #[cfg(windows)]
 use anyhow::{bail, ensure};
@@ -116,7 +118,9 @@ pub fn check() -> Result<Option<Release>> {
     )
 }
 
-/// Downloads and verifies the installer, returning its path in the temp folder.
+/// Downloads the installer and checks it against SHA256SUMS.txt from the same release, returning
+/// its path in the temp folder. The checksum guards against corrupted or incomplete downloads;
+/// it does not authenticate the release.
 #[cfg(windows)]
 pub fn download(release: &Release) -> Result<std::path::PathBuf> {
     let (Some(installer), Some(sums)) = (&release.installer_url, &release.sums_url) else {
@@ -129,7 +133,7 @@ pub fn download(release: &Release) -> Result<std::path::PathBuf> {
     let actual = sha256_hex(&data)?;
     ensure!(
         actual == expected,
-        "The downloaded installer failed its checksum, so it was not run"
+        "The downloaded installer does not match SHA256SUMS.txt (corrupted or incomplete download), so it was not run"
     );
     let dir = std::env::temp_dir().join("StarCitizenRichPresence-update");
     std::fs::create_dir_all(&dir)?;
@@ -138,16 +142,18 @@ pub fn download(release: &Release) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// Starts the verified installer silently in the background; it replaces the exe and auto-restarts with no user input.
+/// Starts the checked installer silently in the background; it replaces the exe and auto-restarts with no user input.
 #[cfg(windows)]
 pub fn launch(installer: &std::path::Path) -> Result<()> {
+    // No /CURRENTUSER: the installer reuses the install mode it was first installed with
+    // (UsePreviousPrivileges), so an all-users install is updated in place rather than
+    // gaining a second per-user copy.
     std::process::Command::new(installer)
         .args([
             "/SP-",
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
-            "/CURRENTUSER",
             "/CLOSEAPPLICATIONS",
             "/FORCECLOSEAPPLICATIONS",
             "/UPDATE",

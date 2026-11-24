@@ -13,6 +13,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Check tag matches Cargo version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:TAG) {
+            Write-Error "Tag $env:TAG does not match Cargo.toml version v$version"
+            exit 1
+          }
       - run: cargo test --locked
       - run: cargo build --locked --release
       - name: Package portable application

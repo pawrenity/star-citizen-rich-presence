@@ -14,7 +14,7 @@ pub fn running_game(system: &mut System, channel: &str) -> Option<GameProcess> {
         true,
         ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
     );
-    system
+    let candidates: Vec<(u32, u64, Option<PathBuf>)> = system
         .processes()
         .iter()
         .filter(|(_, process)| {
@@ -23,17 +23,36 @@ pub fn running_game(system: &mut System, channel: &str) -> Option<GameProcess> {
                 .to_string_lossy()
                 .eq_ignore_ascii_case("StarCitizen.exe")
         })
-        .filter(|(_, process)| {
-            process
-                .exe()
-                .and_then(channel_from_exe)
-                .is_none_or(|c| c.eq_ignore_ascii_case(channel))
+        .map(|(pid, process)| {
+            (
+                pid.as_u32(),
+                process.start_time(),
+                process.exe().map(Path::to_path_buf),
+            )
         })
-        .max_by_key(|(_, process)| process.start_time())
-        .map(|(pid, process)| GameProcess {
-            pid: pid.as_u32(),
-            started: process.start_time(),
-            executable: process.exe().map(Path::to_path_buf),
+        .collect();
+    pick_game(&candidates, channel)
+}
+
+/// Prefers the newest process whose executable is on `channel`. Only when none is known to
+/// be on that channel does it fall back to the newest process with an unknown executable path.
+/// Processes whose executable is on another channel are never chosen.
+fn pick_game(candidates: &[(u32, u64, Option<PathBuf>)], channel: &str) -> Option<GameProcess> {
+    candidates
+        .iter()
+        .filter_map(|(pid, started, exe)| {
+            let group = match exe.as_deref().and_then(channel_from_exe) {
+                Some(found) if found.eq_ignore_ascii_case(channel) => 0,
+                Some(_) => return None,
+                None => 1,
+            };
+            Some((group, *started, *pid, exe))
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)))
+        .map(|(_, started, pid, exe)| GameProcess {
+            pid,
+            started,
+            executable: exe.clone(),
         })
 }
 
@@ -129,5 +148,43 @@ mod tests {
             PathBuf::from("Games/StarCitizen/EPTU/Game.log")
         );
         assert_eq!(channel_from_exe(exe), Some("EPTU"));
+    }
+    #[test]
+    fn picks_the_newest_process_on_the_requested_channel() {
+        let live = |s: &str| {
+            Some(PathBuf::from(format!(
+                "Games/StarCitizen/{s}/Bin64/StarCitizen.exe"
+            )))
+        };
+        let candidates = [
+            (1, 100, live("LIVE")),
+            (2, 300, live("PTU")),
+            (3, 200, live("LIVE")),
+        ];
+        let picked = pick_game(&candidates, "LIVE").unwrap();
+        assert_eq!(picked.pid, 3);
+        assert_eq!(picked.started, 200);
+        assert_eq!(picked.executable, live("LIVE"));
+    }
+    #[test]
+    fn unknown_exe_is_only_a_fallback_and_other_channels_are_excluded() {
+        let ptu = Some(PathBuf::from("Games/StarCitizen/PTU/Bin64/StarCitizen.exe"));
+        let candidates = [(1, 500, None), (2, 100, ptu.clone())];
+        // The newer unknown-path process is used only because no LIVE process is known.
+        assert_eq!(pick_game(&candidates, "LIVE").unwrap().pid, 1);
+        assert_eq!(pick_game(&candidates, "PTU").unwrap().pid, 2);
+        let with_match = [
+            (1, 500, None),
+            (
+                2,
+                100,
+                Some(PathBuf::from(
+                    "Games/StarCitizen/LIVE/Bin64/StarCitizen.exe",
+                )),
+            ),
+        ];
+        assert_eq!(pick_game(&with_match, "LIVE").unwrap().pid, 2);
+        assert!(pick_game(&[(2, 100, ptu)], "LIVE").is_none());
+        assert!(pick_game(&[], "LIVE").is_none());
     }
 }
